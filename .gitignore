@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+build/
+dist/
+
+# Data: only the README and the sample DEM are versioned (IGC files are personal data)
+data/*
+!data/README.md
+!data/rasters_COP30_sample.tar.gz
+
+# Generated outputs
+models/*.npz
+*.html
+flight.json
+emagram.png
+forecast.json
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
