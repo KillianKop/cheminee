@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cheminee"
+version = "0.1.0"
+description = "Paragliding cross-country flight planner: terrain, weather, thermals learned from IGC tracks, triangle optimiser."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+keywords = ["paragliding", "cross-country", "thermals", "igc", "flight-planning", "dem"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+    "Intended Audience :: Science/Research",
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+    "pillow>=9.0",
+    "plotly>=5.18",
+    "torch>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "jsonschema>=4.18", "ruff>=0.6"]
+
+[project.scripts]
+cheminee = "cheminee.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E731",  # small lambdas are used as factories in the CLI
+    "B905",  # zip() without strict= is intended in numeric loops
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*.py" = ["E402"]  # matplotlib.use() must run before pyplot is imported
