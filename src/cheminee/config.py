@@ -36,12 +36,14 @@ class Params:
     objective: str = "triangle"  # one of OBJECTIVES (triangle = flat or FAI, best points first)
     dt_min: float = 5.0  # time bin
     labels_per_state: int = 3  # routes kept per (node, time bin)
-    n_sectors: int = 12  # neighbours: 2 nearest reachable per sector
+    n_sectors: int = 12  # neighbours: the nearest reachable ones per sector
+    neighbours_per_sector: int = 3  # more: longer glides that skip weak thermals (2 -> 3: +8 % on the sample)
     max_visits: int = 2  # max visits of the same node (free distance)
     n_routes: int = 5  # number of (diverse) routes returned
     diversity: float = 0.5  # max Jaccard similarity between returned routes
     max_triangle_evals: int = 30000  # budget of the triangle optimiser (per departure time)
-    final_glide: bool = True  # last thermal: climb only what the last glide needs (False: up to the ceiling)
+    partial_climbs: bool = True  # climb only what is needed, skip weak thermals, final glide (False: ceiling)
+    dolphin_core_m: float = 150.0  # rising air crossed when a thermal is passed without circling
     triangle_departure_step_h: float = 0.5  # triangles also leave the takeoff later, every step (0: first time only)
     # Scoring: CFD coefficients (free distance over 3 turnpoints, flat triangle, FAI triangle)
     coef_free: float = 1.0

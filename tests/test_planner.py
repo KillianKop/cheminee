@@ -140,31 +140,38 @@ def test_triangles_can_leave_the_takeoff_later(terrain, params):
         assert r.times[0] > planner.launch_hour()  # they leave after the first possible time
 
 
-def test_final_glide_climbs_only_what_it_needs(terrain, params):
-    """Regression: the last thermal was climbed to the ceiling and the flight ended high above the goal, with a
-    final climb counted in its duration. Now the last climb stops at the height the final glide needs."""
-    old = _planner(terrain, dataclasses.replace(params, final_glide=False))
-    new = _planner(terrain, params)
-    for kind in ("triangle", "free"):
-        before = RouteOptimizer(old).optimise(kind)[0]
-        after = new.make_route(
-            list(before.nodes), list(before.times), before.kind, before.distance_km * 1000.0, before.turnpoints
-        )
-        _check(after, new, terrain)
-        assert after.times[-1] == pytest.approx(after.profile[-1, 3])  # the flight ends on arrival
-        assert after.times[-1] <= before.times[-1] + 1e-9 and after.distance_km == before.distance_km
-        j = after.nodes[-1]
-        arrival = after.profile[-1, 2]
-        assert arrival >= new.zg[j] + params.arrival_margin_m - 1.0  # still the safety margin
-        assert arrival <= before.profile[-1, 2] + 1e-6
-        # the last glide stays clear of the terrain
-        (x0, y0, z0, _), (x1, y1, z1, _) = after.profile[-2], after.profile[-1]
-        f = np.linspace(0, 1, 50)
+def _clear_of_terrain(route, terrain, params):
+    """Every glide of the profile keeps the terrain clearance (ramping up after the start, like the planner)."""
+    prof = route.profile
+    for (x0, y0, z0, _), (x1, y1, z1, _) in zip(prof[:-1], prof[1:]):
+        d = np.hypot(x1 - x0, y1 - y0)
+        if d < 1.0:
+            continue  # climb
+        f = np.linspace(0.0, 1.0, 80)[1:]
         ground = terrain.sample(terrain.z, x0 + (x1 - x0) * f, y0 + (y1 - y0) * f)
-        assert np.all(z0 + (z1 - z0) * f >= ground - 1.0)
-    # on this terrain at least one route saves time by not climbing to the ceiling at the end
-    tri_old = RouteOptimizer(old).optimise("triangle")[0]
-    tri_new = new.make_route(
-        list(tri_old.nodes), list(tri_old.times), tri_old.kind, tri_old.distance_km * 1000.0, tri_old.turnpoints
-    )
-    assert tri_new.profile[-2, 2] < new.ceil.max() - 1.0 or tri_new.times[-1] < tri_old.profile[-1, 3]
+        assert np.all(z0 + (z1 - z0) * f >= ground + np.minimum(params.clearance_m, 0.2 * d * f) - 1.0)
+
+
+def test_partial_climbs_like_a_pilot(terrain, params):
+    """Regression: every thermal was climbed to the ceiling, the last one included, so routes ended far above the
+    goal and counted a climb after arrival. Now a pilot climbs only what the next glides need, crosses weak
+    thermals without circling and ends with a final glide at the safety margin."""
+    full = _planner(terrain, dataclasses.replace(params, partial_climbs=False))
+    smart = _planner(terrain, params)
+    n_climbs = {"full": 0, "smart": 0}
+    for kind in ("triangle", "free"):
+        for before in RouteOptimizer(full).optimise(kind)[:3]:
+            args = (list(before.nodes), list(before.times), before.kind, before.distance_km * 1000.0, before.turnpoints)
+            after = smart.make_route(*args)
+            _check(after, smart, terrain)
+            _clear_of_terrain(after, terrain, params)
+            _clear_of_terrain(before, terrain, params)
+            assert after.times[-1] == pytest.approx(after.profile[-1, 3])  # the flight ends on arrival
+            assert before.times[-1] == pytest.approx(before.profile[-1, 3])
+            assert after.times[-1] <= before.times[-1] + 1e-9 and after.distance_km == before.distance_km
+            j = after.nodes[-1]
+            assert after.profile[-1, 2] >= smart.zg[j] + params.arrival_margin_m - 1.0  # the safety margin
+            for name, r in (("full", before), ("smart", after)):
+                steps = np.diff(r.profile[:, :3], axis=0)
+                n_climbs[name] += int(np.sum((np.hypot(steps[:, 0], steps[:, 1]) < 1.0) & (steps[:, 2] > 1.0)))
+    assert n_climbs["smart"] < n_climbs["full"]  # some thermals are crossed without circling
