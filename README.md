@@ -28,7 +28,7 @@ Python 3.10 or later.
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 tar -xzf data/rasters_COP30_sample.tar.gz -C data/     # sample DEM -> data/output_hh.asc
-pytest                                                 # 60 tests, about 15 s
+pytest                                                 # 63 tests, about 15 s
 cheminee serve data/output_hh.asc --open               # web interface (3D map) on http://127.0.0.1:8765
 cheminee gui data/output_hh.asc                        # 2D interface
 ```
@@ -128,7 +128,10 @@ open the URL printed by the command in a browser, save the answer and pass it wi
    rotates the 3D view, scroll zooms. Without a click, the planner chooses.
 2. **Day**: date (sets the day of year, needed by the forecast), takeoff and landing times.
 3. **Weather**: a preset, optionally the Open-Meteo forecast of the date at the takeoff, and any value forced by
-   hand. **Preview the weather** shows ceiling, cloud base, wind and sunshine hour by hour.
+   hand. **Forecast model** picks the model (Météo-France AROME / ARPEGE, ICON, ECMWF, UK Met Office, GFS...,
+   with grid spacing and approximate range); **Compare models** shows the ceilings, wind and sunshine of every
+   model for the date side by side, a click choosing one. A model whose range does not cover the day is
+   refused. **Preview the weather** shows ceiling, cloud base, wind and sunshine hour by hour.
 4. **Flights**: objective and number of routes, then **Compute flights**. The planner log is shown while it
    runs. Routes are drawn in 3D at their flight altitude as a smooth line, like a recorded flight: spirals in the
    thermals, descending glides, a translucent curtain down to the ground (flat on the map in 2D mode);

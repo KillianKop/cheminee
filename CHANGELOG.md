@@ -15,7 +15,15 @@ The flight package has its own version number (`version` in the JSON, see [docs/
   menu with their options, licence note and map attribution. `cheminee-kk7 serve` (contrib) offers the kk7
   climatology this way; cheminee itself does not depend on it.
 
+- Weather models: tested Open-Meteo models listed in `weather.openmeteo.FORECAST_MODELS` (grid, approximate
+  range, vertical profile); the web interface offers them in a menu, warns when the date is beyond the range
+  and compares them all for a date (`POST /api/weather/compare`, one cached request per model).
+
 ### Fixed
+
+- Forecast not covering the flying day (date beyond the model range, e.g. AROME two days ahead) was converted
+  into a ceiling at the station altitude all afternoon. It is now refused (`ForecastUnavailable`), with a clear
+  message on the command line and in the web interface.
 
 - Triangle search: the takeoff was only left at the first possible time, so a slow morning (no thermal reachable
   yet) gave no triangle at all. Later departures are now tried every `Params.triangle_departure_step_h` (30 min)
