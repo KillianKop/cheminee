@@ -143,6 +143,8 @@ def test_http_server_end_to_end(app, base_url):
     assert status == 200 and ctype.startswith("text/html") and b"maplibre-gl.js" in body
     status, ctype, body = _get(base_url + "/static/vendor/maplibre-gl-4.7.1/maplibre-gl.js")
     assert status == 200 and ctype == "text/javascript" and b"MapLibre" in body[:200]  # vendored, no CDN
+    status, ctype, body = _get(base_url + "/static/track3d.js")
+    assert status == 200 and b"class TrackLayer" in body and b"track3d.js" in _get(base_url + "/")[2]
     status, ctype, body = _get(base_url + "/api/config")
     assert json.loads(body)["dem"]["name"] == "test"
 

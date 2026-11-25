@@ -4,9 +4,6 @@
 const $ = (id) => document.getElementById(id);
 const LIFT_STOPS = [[0, [141, 156, 138]], [0.2, [201, 199, 154]], [0.45, [242, 193, 78]], [0.7, [240, 127, 60]], [1, [200, 30, 30]]];
 const LIFT_MAX = 0.8; // lift index shown with the last colour
-const TRACK_HALF_WIDTH_M = 35; // 3D track: half width of the ribbon
-const TRACK_THICKNESS_M = 40; // ... and its vertical thickness
-const CLIMB_HALF_SIDE_M = 45; // thermal climbs are drawn as square columns
 const BASEMAPS = {
   topo: {
     tiles: ["a", "b", "c"].map((s) => `https://${s}.tile.opentopomap.org/{z}/{x}/{y}.png`),
@@ -219,7 +216,7 @@ function addOverlays(map) {
     paint: { "line-color": "#1d232a", "line-width": 1.5, "line-dasharray": [3, 2] } });
 
   const empty = { type: "FeatureCollection", features: [] };
-  for (const id of ["routes", "turnpoints", "nodes", "track"]) map.addSource(id, { type: "geojson", data: empty });
+  for (const id of ["routes", "turnpoints", "nodes"]) map.addSource(id, { type: "geojson", data: empty });
   // ground shadow of the flight (the flight itself is the 3D track below)
   map.addLayer({ id: "route-line", type: "line", source: "routes",
     layout: { "line-join": "round", "line-cap": "round" },
@@ -232,13 +229,10 @@ function addOverlays(map) {
     "circle-stroke-color": "#111", "circle-stroke-width": 1 } });
   map.addLayer({ id: "turnpoints", type: "circle", source: "turnpoints", filter: ["==", ["geometry-type"], "Point"],
     paint: { "circle-radius": 7, "circle-color": ["get", "color"], "circle-stroke-color": "#fff", "circle-stroke-width": 2 } });
-  // 3D track: extrusions placed on the terrain, from `bottom` to `top` metres above the ground
-  map.addLayer({ id: "track-curtain", type: "fill-extrusion", source: "track", filter: ["==", ["get", "kind"], "glide"],
-    paint: { "fill-extrusion-color": ["get", "color"], "fill-extrusion-opacity": 0.22, "fill-extrusion-base": 0,
-      "fill-extrusion-vertical-gradient": false } });
-  map.addLayer({ id: "track", type: "fill-extrusion", source: "track",
-    paint: { "fill-extrusion-color": ["get", "color"], "fill-extrusion-opacity": 0.95 } });
-  setTrackScale();
+  // 3D track at the flight altitude (WebGL custom layer, track3d.js)
+  state.track = new TrackLayer();
+  state.track.setExaggeration(Number($("exaggeration").value) || 1);
+  map.addLayer(state.track);
 
   const popup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 8 });
   map.on("mouseenter", "nodes", (ev) => {
@@ -255,19 +249,9 @@ function setBasemap() {
   for (const id of Object.keys(BASEMAPS)) map.setLayoutProperty(id, "visibility", id === choice ? "visible" : "none");
 }
 
-// Terrain elevations are multiplied by the relief exaggeration, extrusion heights are not: scale them the same
-// way so that the track stays at the flight altitude.
-function setTrackScale() {
-  const map = state.map, ex = Number($("exaggeration").value) || 1;
-  if (!map.getLayer("track")) return;
-  map.setPaintProperty("track", "fill-extrusion-base", ["*", ["get", "bottom"], ex]);
-  map.setPaintProperty("track", "fill-extrusion-height", ["*", ["get", "top"], ex]);
-  map.setPaintProperty("track-curtain", "fill-extrusion-height", ["*", ["get", "bottom"], ex]);
-}
-
 function setRelief() {
-  setTrackScale();
   const map = state.map, ex = Number($("exaggeration").value);
+  if (state.track) state.track.setExaggeration(ex); // flat map: the track lies on the map, like the ground shadow
   if (ex === 0) {
     map.setTerrain(null);
     map.easeTo({ pitch: 0, bearing: 0 });
@@ -446,7 +430,7 @@ function drawResult() {
     type: "Feature", properties: { color: r.color, route: k },
     geometry: { type: "LineString", coordinates: r.path.map((p) => [p[0], p[1]]) },
   })) });
-  map.getSource("track").setData({ type: "FeatureCollection", features: shown.flatMap(([r]) => trackFeatures(r)) });
+  state.track.setRoutes(shown.map(([r]) => r));
   map.getSource("turnpoints").setData({ type: "FeatureCollection", features: shown.flatMap(([r]) => [
     { type: "Feature", properties: { color: r.color }, geometry: { type: "LineString", coordinates: r.turnpoints_lonlat } },
     ...r.turnpoints_lonlat.map((c) => ({ type: "Feature", properties: { color: r.color }, geometry: { type: "Point", coordinates: c } })),
@@ -456,35 +440,6 @@ function drawResult() {
     geometry: { type: "Point", coordinates: c },
   })) });
   showLift();
-}
-
-// Polygons of the 3D track: one thin ribbon piece per track step (at most 60 m long, from the server), a square
-// column where the pilot climbs in a thermal (same position, rising altitude).
-function trackFeatures(r) {
-  const tr = r.track, out = [];
-  const ring = (pts) => [...pts, pts[0]];
-  for (let i = 0; i < tr.length - 1; i++) {
-    const [lon0, lat0, a0, g0] = tr[i], [lon1, lat1, a1, g1] = tr[i + 1];
-    const mLat = 111320, mLon = 111320 * Math.cos((lat0 * Math.PI) / 180); // metres per degree
-    const dx = (lon1 - lon0) * mLon, dy = (lat1 - lat0) * mLat, d = Math.hypot(dx, dy);
-    let coords, top, bottom, kind;
-    if (d < 5) {
-      const h = CLIMB_HALF_SIDE_M, eLon = h / mLon, eLat = h / mLat;
-      coords = ring([[lon0 - eLon, lat0 - eLat], [lon0 + eLon, lat0 - eLat], [lon0 + eLon, lat0 + eLat], [lon0 - eLon, lat0 + eLat]]);
-      top = Math.max(a0, a1) - g0;
-      bottom = Math.min(a0, a1) - g0;
-      kind = "climb";
-    } else {
-      const px = (-dy / d) * TRACK_HALF_WIDTH_M / mLon, py = (dx / d) * TRACK_HALF_WIDTH_M / mLat;
-      coords = ring([[lon0 + px, lat0 + py], [lon1 + px, lat1 + py], [lon1 - px, lat1 - py], [lon0 - px, lat0 - py]]);
-      top = (a0 + a1) / 2 - (g0 + g1) / 2;
-      bottom = top - TRACK_THICKNESS_M;
-      kind = "glide";
-    }
-    out.push({ type: "Feature", properties: { color: r.color, kind, top, bottom: Math.max(bottom, 0) },
-      geometry: { type: "Polygon", coordinates: [coords] } });
-  }
-  return out;
 }
 
 // -- route list and altitude profile ------------------------------------------------------- //

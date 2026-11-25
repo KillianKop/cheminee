@@ -130,8 +130,9 @@ open the URL printed by the command in a browser, save the answer and pass it wi
 3. **Weather**: a preset, optionally the Open-Meteo forecast of the date at the takeoff, and any value forced by
    hand. **Preview the weather** shows ceiling, cloud base, wind and sunshine hour by hour.
 4. **Flights**: objective and number of routes, then **Compute flights**. The planner log is shown while it
-   runs. Routes are drawn in 3D at their flight altitude: climbs in thermals as columns, glides as descending
-   ribbons, with a translucent curtain down to the ground; turnpoints and thermal nodes are drawn on the ground.
+   runs. Routes are drawn in 3D at their flight altitude as a smooth line, like a recorded flight: spirals in the
+   thermals, descending glides, a translucent curtain down to the ground (flat on the map in 2D mode);
+   turnpoints and thermal nodes are drawn on the ground.
    Click a route to show or hide it,
    **profile & segments** shows its altitude profile (flight, ground, ceiling) and lists its climbs and glides.
    The toolbar overlays the lift index of any hour, switches the background map and sets the relief.
