@@ -19,6 +19,7 @@ class Route:
     points: float = 0.0  # distance x coefficient of the flight type
     xy: np.ndarray = field(default=None, repr=False)  # (n, 3): x, y, ground z of the nodes
     profile: np.ndarray = field(default=None, repr=False)  # (m, 4): x, y, flight altitude, hour
+    legs: list = field(default=None, repr=False)  # glides of the profile, in order (planner data, see route_track)
 
     @property
     def duration_h(self) -> float:

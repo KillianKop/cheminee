@@ -41,6 +41,12 @@ def _add_flight_args(sp: argparse.ArgumentParser) -> None:
         help="compute the fastest route to this point instead of optimising a score",
     )
     sp.add_argument("--objective", choices=OBJECTIVES, default=d.objective)
+    sp.add_argument(
+        "--glide-lift",
+        type=float,
+        default=d.glide_lift_efficiency,
+        help="share of the thermal core speed met gliding straight through lift zones (0: still air on glides)",
+    )
     sp.add_argument("--date", help="YYYY-MM-DD (sets the day of year; needed by --forecast)")
     sp.add_argument("--day", type=int, default=d.day_of_year, help="day of year (1-365)")
     sp.add_argument("--utc-offset", type=float, default=d.utc_offset)
@@ -130,6 +136,7 @@ def _flight_setup(args):
         t_end=args.t_end,
         weather=build_weather(args, terrain.lat_mid, terrain.lon_mid),
         objective=args.objective,
+        glide_lift_efficiency=args.glide_lift,
     )
     factory = lift_factory(args.model)
     to_xy = lambda lonlat: tuple(float(v) for v in terrain.lonlat_to_xy(*lonlat))  # noqa: E731

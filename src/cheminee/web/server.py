@@ -297,6 +297,7 @@ class WebApp:
                 utc_offset=p.utc_offset,
                 day_of_year=p.day_of_year,
                 n_routes=p.n_routes,
+                glide_lift=p.glide_lift_efficiency,
                 forecast_model="meteofrance_seamless",
             ),
         )
@@ -433,6 +434,7 @@ class WebApp:
             weather=weather,
             objective=objective,
             n_routes=int(_number(req, "n_routes", 1, 10, p.n_routes)),
+            glide_lift_efficiency=_number(req, "glide_lift", 0.0, 1.0, p.glide_lift_efficiency),
         )
 
     # -- weather preview ----------------------------------------------------------------- #
@@ -631,7 +633,7 @@ class WebApp:
             if r.kind in ("triangle", "fai"):
                 tp = np.vstack([tp, tp[:1]])
             ground = t.sample(t.z, prof[:, 0], prof[:, 1])
-            dense = densify(prof)
+            dense = planner.route_track(r, TRACK_STEP_M)  # real altitude curve of the glides (rising air)
             d.update(
                 color=ROUTE_COLORS[k % len(ROUTE_COLORS)],
                 duration_h=round(r.duration_h, 2),

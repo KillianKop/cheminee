@@ -81,7 +81,9 @@ function buildForm() {
   for (const name of Object.keys(cfg.presets)) $("preset").append(el("option", { value: name }, name.replaceAll("_", " ")));
   $("preset").value = d.preset;
   for (const m of cfg.forecast_models || []) $("forecast_model").append(el("option", { value: m.id }, modelLabel(m)));
-  for (const id of ["t_start", "t_end", "utc_offset", "n_routes", "objective", "forecast_model"]) $(id).value = d[id];
+  for (const id of ["t_start", "t_end", "utc_offset", "n_routes", "objective", "forecast_model", "glide_lift"]) {
+    $(id).value = d[id];
+  }
   $("forecast_model").addEventListener("change", updateModelHint);
   $("date").addEventListener("change", updateModelHint);
   $("btn-compare").addEventListener("click", compareModels);
@@ -188,6 +190,7 @@ function request() {
     preset: $("preset").value,
     objective: $("objective").value,
     n_routes: num("n_routes"),
+    glide_lift: num("glide_lift"),
     t_start: num("t_start"),
     t_end: num("t_end"),
     utc_offset: num("utc_offset"),

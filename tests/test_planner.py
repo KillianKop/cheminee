@@ -140,16 +140,18 @@ def test_triangles_can_leave_the_takeoff_later(terrain, params):
         assert r.times[0] > planner.launch_hour()  # they leave after the first possible time
 
 
-def _clear_of_terrain(route, terrain, params):
-    """Every glide of the profile keeps the terrain clearance (ramping up after the start, like the planner)."""
-    prof = route.profile
-    for (x0, y0, z0, _), (x1, y1, z1, _) in zip(prof[:-1], prof[1:]):
-        d = np.hypot(x1 - x0, y1 - y0)
-        if d < 1.0:
-            continue  # climb
-        f = np.linspace(0.0, 1.0, 80)[1:]
-        ground = terrain.sample(terrain.z, x0 + (x1 - x0) * f, y0 + (y1 - y0) * f)
-        assert np.all(z0 + (z1 - z0) * f >= ground + np.minimum(params.clearance_m, 0.2 * d * f) - 1.0)
+def _clear_of_terrain(route, planner, terrain):
+    """Every glide keeps the terrain clearance and the arrival margin on its real altitude curve (rising air
+    included), and the dense track never goes under the ground."""
+    glides = route.legs
+    n_glides = sum(np.hypot(*np.diff(route.profile[:, :2], axis=0).T) >= 1.0)
+    assert glides is not None and len(glides) == n_glides
+    for g in glides:
+        assert planner.glide_clear(g, tolerance_m=1.0), g
+    track = planner.route_track(route)
+    assert np.all(track[:, 2] >= terrain.sample(terrain.z, track[:, 0], track[:, 1]) - 1.0)
+    assert np.all(track[:, 2] <= planner.ceil.max() + 1e-6)
+    assert np.all(np.diff(track[:, 3]) >= -1e-9)
 
 
 def test_partial_climbs_like_a_pilot(terrain, params):
@@ -164,8 +166,8 @@ def test_partial_climbs_like_a_pilot(terrain, params):
             args = (list(before.nodes), list(before.times), before.kind, before.distance_km * 1000.0, before.turnpoints)
             after = smart.make_route(*args)
             _check(after, smart, terrain)
-            _clear_of_terrain(after, terrain, params)
-            _clear_of_terrain(before, terrain, params)
+            _clear_of_terrain(after, smart, terrain)
+            _clear_of_terrain(before, full, terrain)
             assert after.times[-1] == pytest.approx(after.profile[-1, 3])  # the flight ends on arrival
             assert before.times[-1] == pytest.approx(before.profile[-1, 3])
             assert after.times[-1] <= before.times[-1] + 1e-9 and after.distance_km == before.distance_km
@@ -175,3 +177,32 @@ def test_partial_climbs_like_a_pilot(terrain, params):
                 steps = np.diff(r.profile[:, :3], axis=0)
                 n_climbs[name] += int(np.sum((np.hypot(steps[:, 0], steps[:, 1]) < 1.0) & (steps[:, 2] > 1.0)))
     assert n_climbs["smart"] < n_climbs["full"]  # some thermals are crossed without circling
+
+
+def test_rising_air_along_glides(terrain, params):
+    """A glide through lift zones (a working ridge) loses less height than in still air, can even climb, never
+    above the ceiling; without that rising air the planner falls back to the still-air glide."""
+    still = _planner(terrain, dataclasses.replace(params, glide_lift_efficiency=0.0))
+    lifted = _planner(terrain, params)
+    k = lifted.n_slots // 2
+    a, b = still.slots[k], lifted.slots[k]
+    ok = np.isfinite(a.loss_raw) & np.isfinite(b.loss_raw)
+    assert np.all(b.loss_raw[ok] <= a.loss_raw[ok] + 1e-6)  # rising air never adds sink
+    assert np.mean(b.loss_raw[ok] < a.loss_raw[ok] - 1.0) > 0.05  # and it does help on many legs
+    assert b.feas.sum() >= a.feas.sum()  # more glides become possible
+    assert np.all(b.loss[np.isfinite(b.loss)] >= -1e-6)  # from the ceiling the glider cannot climb higher
+    # the closed form of the altitude along a glide matches a step by step integration with the ceiling
+    rng = np.random.default_rng(1)
+    drop = np.cumsum(rng.normal(0, 30, 63))
+    h = 1500.0
+    expected = []
+    for d0, d1 in zip(np.concatenate([[0.0], drop[:-1]]), drop):
+        h = min(1600.0, h - (d1 - d0))
+        expected.append(h)
+    from cheminee.planning.planner import heights_along
+
+    assert np.allclose(heights_along(1500.0, drop, 1600.0), expected)
+    for kind in ("triangle", "free"):
+        for r in RouteOptimizer(lifted).optimise(kind)[:2]:
+            _check(r, lifted, terrain)
+            _clear_of_terrain(r, lifted, terrain)

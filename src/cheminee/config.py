@@ -43,7 +43,7 @@ class Params:
     diversity: float = 0.5  # max Jaccard similarity between returned routes
     max_triangle_evals: int = 30000  # budget of the triangle optimiser (per departure time)
     partial_climbs: bool = True  # climb only what is needed, skip weak thermals, final glide (False: ceiling)
-    dolphin_core_m: float = 150.0  # rising air crossed when a thermal is passed without circling
+    glide_lift_efficiency: float = 0.5  # share of the thermal core speed met gliding straight through lift zones
     triangle_departure_step_h: float = 0.5  # triangles also leave the takeoff later, every step (0: first time only)
     # Scoring: CFD coefficients (free distance over 3 turnpoints, flat triangle, FAI triangle)
     coef_free: float = 1.0
