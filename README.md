@@ -110,20 +110,24 @@ This emagram comes from a real API answer for Digne-les-Bains on 15 November 202
 only two pressure levels): cloud base around 900 m, so no cross-country flight that day. Without Internet access,
 open the URL printed by the command in a browser, save the answer and pass it with `--forecast-json`.
 
-**Weather at three points.** A cross crosses tens of kilometres: the ceiling and the wind are not the same at
-the takeoff and at the far turnpoint. With `--forecast`, the forecast is taken at the takeoff (the map centre
-when the takeoff is automatic) and at two points forming a triangle with it, inside the map (sides up to 20 km).
-Each thermal climbs to its own ceiling and each glide has its own wind, blended between the points
-([docs/model.md](docs/model.md) § 5.1). Three Open-Meteo requests instead of one.
+**Weather points.** A cross crosses tens of kilometres: the ceiling and the wind are not the same at the takeoff
+and at the far turnpoint. With `--forecast`, the forecast is taken at 1 to 10 points: point 1 is the takeoff
+(the map centre when the takeoff is automatic), the others are placed by you or, by default, around the
+takeoff (with 3 points, a triangle of sides up to 20 km inside the map; with more, a regular polygon in the
+same circle). Each thermal climbs to its own ceiling and each glide has its own wind, blended between the points
+([docs/model.md](docs/model.md) § 5.1). One Open-Meteo request per point, and one lift field per point: 10
+points take about twice as long as 3 on the sample DEM.
 
 | Option | Effect |
 |---|---|
-| `--weather-points 3` (default) / `1` | forecast at three points, or at the takeoff only |
-| `--weather-point LON LAT` | place point 2 (and, given twice, point 3) yourself |
+| `--weather-points N` | forecast at N points, the takeoff included (1 to 10, default 3) |
+| `--weather-point LON LAT` | place point 2 yourself; repeat it for points 3, 4... (the others stay automatic) |
 
-The web interface shows the points on the map after *Preview the weather* or a plan, with their ceiling at
-14 h; drag points 2 and 3 to move them (*Weather points* selects 3 or 1). The 2D GUI keeps the weather of the
-takeoff only, since its sliders change one weather.
+In the web interface (section *Takeoff*), *Click adds a weather point* makes each click on the map place a blue
+point, numbered, the way the yellow takeoff is placed (*Esc* or *Click places the takeoff* to go back); the
+number of points grows with the clicks, up to 10. Drag a point to move it, right-click to remove it. Points
+left to the planner appear dashed after *Preview the weather* or a plan; every point then shows its ceiling at
+14 h. The 2D GUI keeps the weather of the takeoff only, since its sliders change one weather.
 
 ### Route kinds
 

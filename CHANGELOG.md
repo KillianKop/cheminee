@@ -8,9 +8,11 @@ The flight package has its own version number (`version` in the JSON, see [docs/
 
 ### Added
 
-- Weather at three points. With a forecast, the planner takes the weather at the takeoff and at two points of a
-  triangle around it (`--weather-points 3`, the default; `--weather-point LON LAT` to place them; web: *Weather
-  points*, draggable markers on the map with their ceiling). Between the points the weather is blended
+- Weather points. With a forecast, the planner takes the weather at 1 to 10 points: the takeoff and points
+  placed by the user, or around the takeoff (3 by default: a triangle; `--weather-points N`,
+  `--weather-point LON LAT` repeated). Web: *Click adds a weather point* places numbered blue points on the map
+  like the takeoff, draggable, removed by a right click; automatic ones are dashed; each shows its ceiling. The
+  forecasts of the points are downloaded a few at once. Between the points the weather is blended
   (`weather/points.py`): the lift field of each point weather (`lift/points.py`, for any lift model), a ceiling
   per thermal node, a wind per glide; the leg cost climbs back to the ceiling of the arrival node. A single
   weather gives exactly the former results.

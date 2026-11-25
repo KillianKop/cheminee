@@ -167,7 +167,9 @@ $c_k \ge 0.5$ m/s. The day is cut into one-hour slots; within a slot the ceiling
 half-way between the ceiling and the nodes) are constant.
 
 **Weather at several points** (`Params.weather_points`, `weather/points.py`). With a forecast the weather is
-taken at $K = 3$ points $P_k$: the takeoff and two points forming a triangle with it (`planning/sites.py`).
+taken at $K$ points $P_k$ ($1 \le K \le 10$, 3 by default): the takeoff and points placed by the user or, by
+default, the other vertices of a regular polygon through the takeoff, pointing towards the map centre: the
+equilateral triangle of side 20 km at most for $K = 3$, the same circle for more points (`planning/sites.py`).
 Between them it is blended with smooth inverse-distance weights
 
 $$\omega_k(x) = \frac{1 / (d_k(x)^2 + L^2)}{\sum_m 1 / (d_m(x)^2 + L^2)}, \qquad L = 2 \text{ km},$$
