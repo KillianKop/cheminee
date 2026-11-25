@@ -35,23 +35,21 @@
 
   <section>
     <h2><span class="step">3</span> Weather</h2>
-    <div class="grid2">
-      <label>Preset <select id="preset"></select></label>
-      <label>Forecast model <input id="forecast_model" list="models"></label>
-    </div>
-    <datalist id="models">
-      <option value="meteofrance_seamless"><option value="meteofrance_arome_france_hd">
-      <option value="icon_seamless"><option value="ecmwf_ifs025"><option value="gfs_seamless">
-    </datalist>
+    <label>Preset <select id="preset"></select></label>
     <label class="check"><input type="checkbox" id="forecast"> Use the Open-Meteo forecast of the date
       <span class="hint">(network; at the takeoff, else the map centre)</span></label>
+    <label>Forecast model <select id="forecast_model"></select></label>
+    <p id="model-hint" class="hint"></p>
     <label class="check"><input type="checkbox" id="shadows"> Terrain shadows (slower)</label>
     <details id="weather-details">
       <summary>Adjust values <span class="hint">(empty = preset / forecast)</span></summary>
       <div id="weather-fields" class="grid2"></div>
       <button id="btn-reset-weather" class="link">Clear all</button>
     </details>
-    <button id="btn-weather" class="secondary">Preview the weather</button>
+    <div class="buttons">
+      <button id="btn-weather" class="secondary">Preview the weather</button>
+      <button id="btn-compare" class="secondary" title="ceilings, wind and sun of every model for the date">Compare models</button>
+    </div>
     <div id="weather-out"></div>
   </section>
 

@@ -80,7 +80,12 @@ function buildForm() {
   $("date").addEventListener("change", updateDateHint);
   for (const name of Object.keys(cfg.presets)) $("preset").append(el("option", { value: name }, name.replaceAll("_", " ")));
   $("preset").value = d.preset;
+  for (const m of cfg.forecast_models || []) $("forecast_model").append(el("option", { value: m.id }, modelLabel(m)));
   for (const id of ["t_start", "t_end", "utc_offset", "n_routes", "objective", "forecast_model"]) $(id).value = d[id];
+  $("forecast_model").addEventListener("change", updateModelHint);
+  $("date").addEventListener("change", updateModelHint);
+  $("btn-compare").addEventListener("click", compareModels);
+  updateModelHint();
   if (!cfg.forecast) {
     $("forecast").disabled = true;
     $("forecast").parentElement.title = "forecasts are disabled on this server";
@@ -96,6 +101,7 @@ function buildForm() {
       $("date").value = new Date(Date.now() + 86400e3).toISOString().slice(0, 10);
     }
     updatePlaceholders();
+    updateModelHint();
   });
   $("btn-reset-weather").addEventListener("click", () => {
     document.querySelectorAll("#weather-fields input").forEach((i) => (i.value = ""));
@@ -140,6 +146,31 @@ function updateDateHint() {
   const d = new Date(`${value}T12:00:00Z`);
   const day = Math.round((d - Date.UTC(d.getUTCFullYear(), 0, 0)) / 86400e3);
   $("date-hint").textContent = `Day ${day} of the year. Use UTC offset 1 in winter, 2 in summer (France).`;
+}
+
+function modelLabel(m) {
+  const grid = m.grid_km ? `${m.grid_km} km` : "mixed grids";
+  return `${m.label} · ${grid} · ≈${m.range_days} days`;
+}
+
+// What the chosen model can do for the chosen date (range, vertical profile).
+function updateModelHint() {
+  const m = (state.cfg.forecast_models || []).find((x) => x.id === $("forecast_model").value);
+  const hint = $("model-hint");
+  hint.classList.remove("warn");
+  if (!m) { hint.textContent = ""; return; }
+  const notes = [];
+  if (!m.levels) notes.push("no vertical profile: ceiling from surface data only");
+  const value = $("date").value;
+  if (value) {
+    const days = (new Date(`${value}T12:00:00`) - new Date()) / 86400e3;
+    if (days > m.range_days) {
+      notes.unshift(`the date is about ${Math.ceil(days)} days ahead, beyond this model's range: it will be refused`);
+      hint.classList.add("warn");
+    }
+  }
+  hint.textContent = notes.length ? notes.join(" · ") : "";
+  hint.hidden = !notes.length;
 }
 
 function updatePlaceholders() {
@@ -415,6 +446,43 @@ function showLift() {
 }
 
 // -- weather preview --------------------------------------------------------------------- //
+// Every forecast model for the date, side by side; a click on a row chooses that model.
+async function compareModels() {
+  const out = $("weather-out");
+  if (!$("date").value) {
+    out.innerHTML = '<div class="status error">Choose a date first.</div>';
+    return;
+  }
+  out.textContent = "Asking every model (one request each, cached)…";
+  try {
+    const res = await api("/api/weather/compare", request());
+    const ok = res.models.filter((m) => m.ok);
+    const hours = ok.length ? Object.keys(ok[0].ceiling_m).filter((h) => h >= 12 && h <= 15) : [];
+    const best = Math.max(...ok.map((m) => m.ceiling_max_m));
+    const arrow = (dir) => `<span class="arrow" style="transform: rotate(${dir}deg)">↓</span>`;
+    const rows = res.models.map((m) => m.ok
+      ? `<tr class="model${m.id === $("forecast_model").value ? " chosen" : ""}" data-model="${m.id}" title="${m.label}"><td>${m.short}</td>` +
+        hours.map((h) => `<td>${m.ceiling_m[h]}</td>`).join("") +
+        `<td class="${m.ceiling_max_m === best ? "best" : ""}">${m.ceiling_max_m}</td>` +
+        `<td>${arrow(m.wind_aloft_14[0])}${m.wind_aloft_14[1]}</td><td>${Math.round(100 * m.sun_14)}%</td></tr>`
+      : `<tr class="off" title="${m.label}"><td>${m.short}</td><td colspan="${hours.length + 3}">${m.error}</td></tr>`).join("");
+    out.innerHTML = `<div class="scroll-x"><table class="compare"><thead><tr><th>${res.date}</th>` +
+      hours.map((h) => `<th>${Number(h)}h</th>`).join("") +
+      `<th>max</th><th>wind 3000 m</th><th>sun</th></tr></thead><tbody>${rows}</tbody></table></div>` +
+      '<div class="sources">ceiling (m) by local hour, wind and sun at 14h · click a model to use it</div>';
+    out.querySelectorAll("tr.model").forEach((tr) => tr.addEventListener("click", () => {
+      $("forecast_model").value = tr.dataset.model;
+      $("forecast").checked = true;
+      updatePlaceholders();
+      updateModelHint();
+      out.querySelectorAll("tr.model").forEach((x) => x.classList.toggle("chosen", x === tr));
+    }));
+  } catch (err) {
+    out.innerHTML = "";
+    out.append(el("div", { class: "status error" }, err.message));
+  }
+}
+
 async function previewWeather() {
   const out = $("weather-out");
   out.textContent = "Loading…";

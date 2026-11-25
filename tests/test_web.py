@@ -359,3 +359,30 @@ def test_extra_lift_models_plugged_in_by_the_caller(terrain, params):
             app.start_plan({"lift": bad})
     with pytest.raises(ValueError):
         WebApp(terrain, lambda t, p: HeuristicLift(t, p), params, lift_choices={"base": choice})
+
+
+def test_weather_models_choice_and_comparison(terrain, params):
+    def fetch(lat, lon, date, model):
+        payload = json.loads(REAL_ANSWER.read_text())
+        if model == "icon_d2":  # range ending in the morning
+            for key, values in payload["hourly"].items():
+                if key != "time":
+                    payload["hourly"][key] = [v if k < 10 else None for k, v in enumerate(values)]
+        return payload
+
+    app = WebApp(terrain, lambda t, p: HeuristicLift(t, p), params, fetch_payload=fetch)
+    ids = [m["id"] for m in app.config()["forecast_models"]]
+    assert "meteofrance_seamless" in ids and "best_match" in ids
+    base = {"forecast": True, "date": "2026-11-15"}
+    with pytest.raises(RequestError, match="unknown"):
+        app.weather_summary({**base, "forecast_model": "my_model&x=1"})
+    with pytest.raises(RequestError, match="flying hours"):
+        app.weather_summary({**base, "forecast_model": "icon_d2"})
+    with pytest.raises(RequestError, match="date"):
+        app.compare_models({})
+    table = app.compare_models(base)["models"]
+    assert [m["id"] for m in table] == ids
+    rows = {m["id"]: m for m in table}
+    assert not rows["icon_d2"]["ok"] and "flying hours" in rows["icon_d2"]["error"] and rows["icon_d2"]["short"]
+    ok = rows["meteofrance_seamless"]
+    assert ok["ok"] and ok["ceiling_max_m"] == max(ok["ceiling_m"].values()) and 0 <= ok["sun_14"] <= 1

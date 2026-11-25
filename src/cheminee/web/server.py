@@ -11,6 +11,7 @@ API:
     GET  /api/elevation?lon=&lat=   DEM altitude of a point (JSON)
     GET  /tiles/dem/<z>/<x>/<y>.png elevation tile of the DEM (Terrain-RGB)
     POST /api/weather               resolved weather of a request, hour by hour (JSON)
+    POST /api/weather/compare       the same with every forecast model, side by side (JSON)
     POST /api/plan                  start a planning job -> {"job": id}
     GET  /api/jobs/<id>             job status, log lines and, when done, routes, thermal nodes, lift frames
 """
@@ -272,6 +273,7 @@ class WebApp:
             },
             objectives=list(OBJECTIVES),
             forecast=self.fetch_payload is not None,
+            forecast_models=self._forecast_models(),
             lift_models={
                 "base": dict(label="cheminee lift model", options={}, attribution=None, note=None),
                 **{
@@ -298,6 +300,15 @@ class WebApp:
                 forecast_model="meteofrance_seamless",
             ),
         )
+
+    @staticmethod
+    def _forecast_models() -> list[dict]:
+        from ..weather.openmeteo import FORECAST_MODELS
+
+        return [
+            dict(id=k, label=label, grid_km=grid, range_days=days, levels=levels, short=short)
+            for k, (label, grid, days, levels, short) in FORECAST_MODELS.items()
+        ]
 
     def config_bytes(self) -> tuple[str, bytes, bytes]:
         """(ETag, JSON, gzipped JSON) of `config()`, built once: the DEM does not change while serving."""
@@ -374,14 +385,21 @@ class WebApp:
 
             xy = self.takeoff_xy(req)
             lon, lat = self.t.xy_to_lonlat(*xy) if xy else (self.t.lon_mid, self.t.lat_mid)
-            model = str(req.get("forecast_model") or "meteofrance_seamless")
+            model = str(req.get("forecast_model") or openmeteo.DEFAULT_MODEL)
+            if model not in openmeteo.FORECAST_MODELS:
+                raise RequestError(f"forecast_model: unknown {model!r} (known: {', '.join(openmeteo.FORECAST_MODELS)})")
             key = (date.isoformat(), model, round(float(lat), 2), round(float(lon), 2))
             if key not in self._payloads:
                 try:
                     self._payloads[key] = self.fetch_payload(float(lat), float(lon), date, model)
                 except Exception as exc:  # network, HTTP error, bad model name
                     raise RequestError(f"forecast: Open-Meteo request failed ({exc})") from None
-            weather = openmeteo.weather_from_payload(self._payloads[key], float(lon), weather)
+            try:
+                weather = openmeteo.weather_from_payload(self._payloads[key], float(lon), weather)
+            except openmeteo.ForecastUnavailable as exc:
+                error = RequestError(f"forecast: {openmeteo.FORECAST_MODELS[model][0]}: {exc}")
+                error.short = f"covers {exc.covered}/{exc.total} flying hours (beyond its range?)"
+                raise error from None
             sources.append(f"Open-Meteo {model} {date.isoformat()} at {float(lat):.3f}, {float(lon):.3f}")
         overrides = req.get("weather") or {}
         for name, value in overrides.items():
@@ -441,6 +459,41 @@ class WebApp:
                 )
             )
         return dict(sources=sources, day_of_year=p.day_of_year, hours=rows, weather=weather.to_dict())
+
+    def compare_models(self, req: dict) -> dict:
+        """Weather of the request with every forecast model, side by side (one Open-Meteo request per model,
+        cached), to choose a model before planning."""
+        from ..weather.openmeteo import FORECAST_MODELS
+
+        if self._date(req) is None:
+            raise RequestError("compare: needs a date")
+        if self.fetch_payload is None:
+            raise RequestError("forecast: disabled on this server")
+
+        def one(model: str) -> dict:
+            label, grid, days, levels, short = FORECAST_MODELS[model]
+            row = dict(id=model, label=label, grid_km=grid, range_days=days, levels=levels, short=short)
+            try:
+                summary = self.weather_summary({**req, "forecast": True, "forecast_model": model})
+            except RequestError as exc:
+                return {**row, "ok": False, "error": getattr(exc, "short", str(exc).split(": ", 2)[-1])}
+            hours = summary["hours"]
+            best = max(hours, key=lambda h: h["ceiling_m"])
+            at14 = min(hours, key=lambda h: abs(h["hour"] - 14.0))
+            return {
+                **row,
+                "ok": True,
+                "ceiling_m": {f"{h['hour']:g}": h["ceiling_m"] for h in hours},
+                "ceiling_max_m": best["ceiling_m"],
+                "ceiling_max_hour": best["hour"],
+                "wind_aloft_14": [at14["wind_aloft_dir_deg"], at14["wind_aloft_kmh"]],
+                "sun_14": at14["sun"],
+                "strength_14": at14["strength"],
+            }
+
+        with ThreadPoolExecutor(max_workers=4) as pool:  # a few requests at once, kept low for Open-Meteo
+            rows = list(pool.map(one, FORECAST_MODELS))
+        return {"date": str(self._date(req)), "models": rows}
 
     # -- planning jobs --------------------------------------------------------------------- #
     def lift_spec(self, req: dict) -> dict:
@@ -755,6 +808,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise RequestError("expected a JSON object")
             if self.path == "/api/weather":
                 return self._json(self.app.weather_summary(req))
+            if self.path == "/api/weather/compare":
+                return self._json(self.app.compare_models(req))
             if self.path == "/api/plan":
                 return self._json({"job": self.app.start_plan(req)})
             self._error(HTTPStatus.NOT_FOUND, "not found")
