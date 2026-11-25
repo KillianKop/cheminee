@@ -9,6 +9,10 @@ Physics of one leg i -> j (speed-to-fly, MacCready-like):
 The airspeed v is chosen among the speeds of the glider polar to minimise time(v),
 subject to terrain clearance and to the arrival margin above j. Wind (at glide
 altitude) and ceiling change from hour to hour ("slots").
+
+The search climbs to the ceiling in every thermal. The last glide of a route is then
+redone as a final glide (`Planner.make_route`): in the last thermal the pilot climbs
+only the height that glide needs, and the flight ends on arrival.
 """
 
 from __future__ import annotations
@@ -349,6 +353,9 @@ class Planner:
                 prof.append((self.x[i], self.y[i], start_alt, times[k]))
             t_arrive = min(prof[-1][3] + glide_h, times[k + 1])
             prof.append((self.x[j], self.y[j], arrival, t_arrive))
+        times = list(times[:-1]) + [prof[-1][3]]  # the flight ends on arrival, not after a last climb
+        if p.final_glide and len(path) >= 3:
+            prof, times = self._final_glide(path, prof, times)
         return Route(
             path,
             times,
@@ -359,6 +366,47 @@ class Planner:
             np.column_stack([self.x[path], self.y[path], self.zg[path]]),
             np.array(prof),
         )
+
+    def _final_glide(self, path: list[int], prof: list, times: list[float]):
+        """Redo the last glide i -> j as a final glide.
+
+        In the thermal of i the pilot climbs only to the height the glide needs (arrival margin above j, terrain
+        clearance on the way), at the airspeed minimising climb time + glide time. Profile rows of the last leg:
+        prof[-3] = arrival at i, prof[-2] = top of the climb at i, prof[-1] = arrival at j.
+        """
+        p = self.p
+        i, j = path[-2], path[-1]
+        xi, yi, arr_i, t_arr_i = prof[-3]
+        b = self.bin_floor(t_arr_i)
+        rate = float(self.climb[min(b, self.n_bins), i])
+        if rate < p.min_climb_ms:
+            return prof, times  # the thermal of i is gone by then: keep the planned leg
+        s = self.slots[self.slot_of(self.bin_floor(times[-2]))]
+        dist = float(self.dist[i, j])
+        frac = np.linspace(0.0, 1.0, 64)[1:]
+        along = np.maximum(dist * frac, 1e-6)
+        xs, ys = xi + (self.x[j] - xi) * frac, yi + (self.y[j] - yi) * frac
+        need = self.t.sample(self.t.z, xs, ys) + np.minimum(p.clearance_m, 0.2 * along)
+        loss = s.loss[:, i, j]  # (V,) height lost per airspeed
+        t_glide = s.t_glide[:, i, j]  # (V,) seconds
+        with np.errstate(invalid="ignore"):
+            h_need = np.maximum(
+                self.zg[j] + p.arrival_margin_m + loss,
+                (need[None, :] + loss[:, None] / max(dist, 1e-6) * (dist - along[None, :])).max(axis=1),
+            )
+        ok = np.isfinite(t_glide) & (h_need <= s.ceil + 1e-6)
+        if not ok.any():
+            return prof, times
+        climb_s = np.maximum(h_need - arr_i, 0.0) / rate
+        total = np.where(ok, climb_s + t_glide, np.inf)
+        v = int(total.argmin())
+        top = max(arr_i, float(h_need[v]))
+        t_leave = t_arr_i + float(climb_s[v]) / 3600.0
+        t_end = t_leave + float(t_glide[v]) / 3600.0
+        if t_end >= prof[-1][3]:  # never slower than the planned leg
+            return prof, times
+        prof = prof[:-2] + [(xi, yi, top, t_leave), (self.x[j], self.y[j], top - float(loss[v]), t_end)]
+        return prof, times[:-2] + [t_leave, t_end]
 
 
 def default_takeoff(terrain: Terrain, params: Params, lift: LiftModel) -> tuple[float, float]:

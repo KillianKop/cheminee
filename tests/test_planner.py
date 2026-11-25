@@ -67,7 +67,9 @@ def test_goal_route_is_the_fastest_path(terrain, params):
     (route,) = opt.to_goal((planner.x[target], planner.y[target]))
     _check(route, planner, terrain)
     arr, _ = opt.earliest(0, planner.launch_hour(), first=True)
-    assert route.kind == "goal" and route.times[-1] == pytest.approx(arr[route.nodes[-1]])
+    # the search time includes a climb at the goal; the flight itself ends on arrival, no later
+    assert route.kind == "goal" and route.times[-1] <= arr[route.nodes[-1]] + 1e-9
+    assert route.times[-1] == pytest.approx(route.profile[-1, 3])
 
 
 def test_tailwind_is_faster_than_headwind(terrain, params):
@@ -136,3 +138,33 @@ def test_triangles_can_leave_the_takeoff_later(terrain, params):
         _check(r, planner, terrain)
         assert r.kind in ("triangle", "fai")
         assert r.times[0] > planner.launch_hour()  # they leave after the first possible time
+
+
+def test_final_glide_climbs_only_what_it_needs(terrain, params):
+    """Regression: the last thermal was climbed to the ceiling and the flight ended high above the goal, with a
+    final climb counted in its duration. Now the last climb stops at the height the final glide needs."""
+    old = _planner(terrain, dataclasses.replace(params, final_glide=False))
+    new = _planner(terrain, params)
+    for kind in ("triangle", "free"):
+        before = RouteOptimizer(old).optimise(kind)[0]
+        after = new.make_route(
+            list(before.nodes), list(before.times), before.kind, before.distance_km * 1000.0, before.turnpoints
+        )
+        _check(after, new, terrain)
+        assert after.times[-1] == pytest.approx(after.profile[-1, 3])  # the flight ends on arrival
+        assert after.times[-1] <= before.times[-1] + 1e-9 and after.distance_km == before.distance_km
+        j = after.nodes[-1]
+        arrival = after.profile[-1, 2]
+        assert arrival >= new.zg[j] + params.arrival_margin_m - 1.0  # still the safety margin
+        assert arrival <= before.profile[-1, 2] + 1e-6
+        # the last glide stays clear of the terrain
+        (x0, y0, z0, _), (x1, y1, z1, _) = after.profile[-2], after.profile[-1]
+        f = np.linspace(0, 1, 50)
+        ground = terrain.sample(terrain.z, x0 + (x1 - x0) * f, y0 + (y1 - y0) * f)
+        assert np.all(z0 + (z1 - z0) * f >= ground - 1.0)
+    # on this terrain at least one route saves time by not climbing to the ceiling at the end
+    tri_old = RouteOptimizer(old).optimise("triangle")[0]
+    tri_new = new.make_route(
+        list(tri_old.nodes), list(tri_old.times), tri_old.kind, tri_old.distance_km * 1000.0, tri_old.turnpoints
+    )
+    assert tri_new.profile[-2, 2] < new.ceil.max() - 1.0 or tri_new.times[-1] < tri_old.profile[-1, 3]
