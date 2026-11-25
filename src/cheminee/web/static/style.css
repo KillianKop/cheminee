@@ -29,7 +29,19 @@ body { display: flex; background: var(--bg); }
   padding: 0 16px 24px;
 }
 main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-#map { flex: 1; min-height: 0; }
+#map-box { flex: 1; min-height: 0; position: relative; }
+#map { position: absolute; inset: 0; }
+.map-note { position: absolute; left: 8px; bottom: 8px; z-index: 2; max-width: 60%; font-size: 11px;
+  background: rgba(255, 255, 255, 0.85); padding: 3px 7px; border-radius: 4px; color: var(--ink); }
+#replay { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 8px 14px;
+  border-top: 1px solid var(--line); background: var(--panel); }
+#replay-time { flex: 1; min-width: 160px; }
+#replay-clock { font-variant-numeric: tabular-nums; min-width: 42px; }
+#replay-info { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 300px; }
+#replay label { display: flex; flex-direction: row; align-items: center; gap: 6px; }
+button.icon { width: 36px; height: 32px; padding: 0; font-size: 15px; background: var(--accent); color: #fff;
+  border-color: var(--accent); }
+#lift-choice { margin-top: 8px; }
 .maplibregl-ctrl-attrib { font-size: 10px; max-width: 70%; }
 
 header { position: sticky; top: 0; background: var(--panel); padding: 14px 0 8px; z-index: 1; }

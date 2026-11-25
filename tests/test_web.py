@@ -185,7 +185,7 @@ def test_lift_fields_and_results_are_reused(app):
 
 
 def test_cached_fields_are_read_only(app, params):
-    lift = app._cached_lift(params)
+    lift = app._cached_lift(params, {"model": "base", "options": {}})
     lift.prefetch([12.0, 12.5, 13.0])
     f = lift.field(12.5)
     assert np.array_equal(f, HeuristicLift(app.t, params).field(12.5))  # parallel = serial result
@@ -309,3 +309,53 @@ def test_track_is_dense_and_above_the_ground(app, terrain):
         assert np.allclose(track[:, 3], terrain.sample(terrain.z, x, y), atol=1.0)
         assert np.all(track[:, 2] >= track[:, 3] - 1.0)
         assert np.allclose(track[0, :2], r["path"][0][:2]) and np.allclose(track[-1, :2], r["path"][-1][:2])
+        assert track.shape[1] == 5 and np.all(np.diff(track[:, 4]) >= -1e-9)  # hour of every point, for the replay
+        assert track[0, 4] == pytest.approx(r["path"][0][3], abs=1e-3)
+        assert track[-1, 4] == pytest.approx(r["path"][-1][3], abs=1e-3)
+
+
+def test_extra_lift_models_plugged_in_by_the_caller(terrain, params):
+    """Add-ons (kk7) plug their lift model into the page without cheminee depending on them."""
+    from cheminee.web import LiftChoice
+
+    made = []
+
+    class Scaled:
+        def __init__(self, base, gain):
+            self.base, self.gain, self.name = base, gain, f"{base.name} x{gain:g}"
+
+        def field(self, hour):
+            return np.clip(self.base.field(hour) * self.gain, 0, 1).astype(np.float32)
+
+    def make(base_factory, options):
+        made.append(options)
+        return lambda t, p: Scaled(base_factory(t, p), options["gain"])
+
+    choice = LiftChoice("scaled lift", make, {"gain": ("gain", "", 0.5, 2.0, 0.1, 1.2)}, "Data: someone, CC BY", "test")
+    app = WebApp(terrain, lambda t, p: HeuristicLift(t, p), params, lift_choices={"scaled": choice})
+    models = app.config()["lift_models"]
+    assert set(models) == {"base", "scaled"} and models["scaled"]["options"]["gain"]["default"] == 1.2
+
+    base = _wait(app, app.start_plan({"objective": "free", "takeoff": {"x_km": 1.6, "y_km": 4.0}}))["result"]
+    assert base["lift_model"] == "base" and base["lift_attribution"] is None
+    req = {
+        "objective": "free",
+        "takeoff": {"x_km": 1.6, "y_km": 4.0},
+        "lift": {"model": "scaled", "options": {"gain": 1.5}},
+    }
+    res = _wait(app, app.start_plan(req))["result"]
+    assert res["lift_model"] == "scaled" and res["lift_name"].endswith("x1.5")
+    assert res["lift_attribution"] == "Data: someone, CC BY"
+    assert np.asarray(res["lift"]["frames"]).max() > np.asarray(base["lift"]["frames"]).max()  # its own fields
+    req["takeoff"] = {"x_km": 2.0, "y_km": 4.5}
+    _wait(app, app.start_plan(req))
+    assert made == [{"gain": 1.5}], "one factory per model and options (add-ons cache their data in it)"
+    for bad, message in [
+        ({"model": "nope"}, "unknown model"),
+        ({"model": "scaled", "options": {"x": 1}}, "unknown options"),
+        ({"model": "scaled", "options": {"gain": 9}}, "gain"),
+    ]:
+        with pytest.raises(RequestError, match=message):
+            app.start_plan({"lift": bad})
+    with pytest.raises(ValueError):
+        WebApp(terrain, lambda t, p: HeuristicLift(t, p), params, lift_choices={"base": choice})

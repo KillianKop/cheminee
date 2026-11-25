@@ -83,6 +83,24 @@ def densify(profile: np.ndarray, step_m: float = TRACK_STEP_M) -> np.ndarray:
     return np.vstack(parts)
 
 
+@dataclasses.dataclass
+class LiftChoice:
+    """An extra lift model offered by the page, plugged in by whoever starts the server (e.g. an add-on).
+
+    `make(base_factory, options) -> factory` returns a lift factory `(terrain, params) -> LiftModel`, usually
+    wrapping the base one; `options` holds the numeric options of `options_spec`
+    (name -> (label, unit, min, max, step, default)). `attribution` is shown on the map with the results and
+    `note` next to the choice (licence terms, for instance). cheminee itself registers none: data with other
+    licences stay in add-ons.
+    """
+
+    label: str
+    make: Callable[[Callable, dict], Callable]
+    options_spec: dict = dataclasses.field(default_factory=dict)
+    attribution: str | None = None
+    note: str | None = None
+
+
 class RequestError(ValueError):
     """Invalid request: answered with HTTP 400 and the message."""
 
@@ -187,12 +205,17 @@ class WebApp:
         base_params: Params | None = None,
         fetch_payload: Callable | None = None,
         dem_name: str = "",
+        lift_choices: dict[str, LiftChoice] | None = None,
     ):
         """`fetch_payload(lat, lon, date, model) -> dict` downloads an Open-Meteo answer (None: forecasts off)."""
         self.t, self.lift_factory = terrain, lift_factory
         self.base_params = base_params or Params()
         self.fetch_payload = fetch_payload
         self.dem_name = dem_name
+        self.lift_choices = dict(lift_choices or {})
+        if "base" in self.lift_choices:
+            raise ValueError("'base' is the name of the default lift model")
+        self._factories: dict[str, Callable] = {}  # lift factory of each lift choice and options
         self.stride = max(1, math.ceil(max(terrain.nx, terrain.ny) / MAX_GRID))
         self.jobs: dict[str, dict] = {}
         self._payloads: dict[tuple, dict] = {}  # Open-Meteo answers: keep request counts low
@@ -249,6 +272,21 @@ class WebApp:
             },
             objectives=list(OBJECTIVES),
             forecast=self.fetch_payload is not None,
+            lift_models={
+                "base": dict(label="cheminee lift model", options={}, attribution=None, note=None),
+                **{
+                    name: dict(
+                        label=c.label,
+                        options={
+                            k: dict(label=v[0], unit=v[1], min=v[2], max=v[3], step=v[4], default=v[5])
+                            for k, v in c.options_spec.items()
+                        },
+                        attribution=c.attribution,
+                        note=c.note,
+                    )
+                    for name, c in self.lift_choices.items()
+                },
+            },
             defaults=dict(
                 preset="good_day",
                 objective=p.objective,
@@ -405,17 +443,42 @@ class WebApp:
         return dict(sources=sources, day_of_year=p.day_of_year, hours=rows, weather=weather.to_dict())
 
     # -- planning jobs --------------------------------------------------------------------- #
-    @staticmethod
-    def _lift_key(params: Params) -> str:
-        """Everything the lift fields depend on: weather, day, time zone (not the takeoff, objective or window)."""
-        return json.dumps([params.weather.to_dict(), params.day_of_year, params.utc_offset], sort_keys=True)
+    def lift_spec(self, req: dict) -> dict:
+        """Lift model of the request: {"model": "base" | an extra choice, "options": {...}}, validated."""
+        spec = req.get("lift") or {}
+        name = spec.get("model", "base")
+        if name == "base":
+            return {"model": "base", "options": {}}
+        if name not in self.lift_choices:
+            raise RequestError(f"lift: unknown model {name!r} (known: base, {', '.join(self.lift_choices)})")
+        given = spec.get("options") or {}
+        unknown = set(given) - set(self.lift_choices[name].options_spec)
+        if unknown:
+            raise RequestError(f"lift: unknown options {sorted(unknown)}")
+        options = {}
+        for key, (_, _, lo, hi, _, default) in self.lift_choices[name].options_spec.items():
+            options[key] = _number(given, key, lo, hi, default)
+        return {"model": name, "options": options}
 
-    def _cached_lift(self, params: Params) -> _CachedLift:
-        key = self._lift_key(params)
+    def _factory(self, spec: dict) -> Callable:
+        if spec["model"] == "base":
+            return self.lift_factory
+        key = json.dumps(spec, sort_keys=True)
+        if key not in self._factories:  # one per choice and options: add-ons may cache data in their factory
+            self._factories[key] = self.lift_choices[spec["model"]].make(self.lift_factory, spec["options"])
+        return self._factories[key]
+
+    @staticmethod
+    def _lift_key(params: Params, spec: dict) -> str:
+        """Everything the lift fields depend on: lift model, weather, day, time zone (not the takeoff or window)."""
+        return json.dumps([spec, params.weather.to_dict(), params.day_of_year, params.utc_offset], sort_keys=True)
+
+    def _cached_lift(self, params: Params, spec: dict) -> _CachedLift:
+        key = self._lift_key(params, spec)
         if key in self._lifts:
             self._lifts.move_to_end(key)
         else:
-            self._lifts[key] = _CachedLift(self.lift_factory(self.t, params))
+            self._lifts[key] = _CachedLift(self._factory(spec)(self.t, params))
             while len(self._lifts) > MAX_LIFT_CACHE:
                 self._lifts.popitem(last=False)
         return self._lifts[key]
@@ -424,10 +487,11 @@ class WebApp:
         weather, sources = self.resolve_weather(req)  # validate before queuing: errors go back as HTTP 400
         params = self.params(req, weather)
         takeoff = self.takeoff_xy(req)
+        spec = self.lift_spec(req)
         job_id = uuid.uuid4().hex[:12]
         job = dict(id=job_id, status="queued", log=[], sources=sources, created=time.time())
         result_key = json.dumps(
-            [self._lift_key(params), takeoff, params.objective, params.n_routes, params.t_start, params.t_end]
+            [self._lift_key(params, spec), takeoff, params.objective, params.n_routes, params.t_start, params.t_end]
         )
         with self._jobs_lock:
             self.jobs[job_id] = job
@@ -439,7 +503,7 @@ class WebApp:
                 self._results.move_to_end(result_key)
                 job.update(status="done", result=cached, elapsed_s=0.0, log=["[web] same request as before: reused"])
                 return job_id
-        threading.Thread(target=self._run, args=(job, params, takeoff, result_key), daemon=True).start()
+        threading.Thread(target=self._run, args=(job, params, takeoff, spec, result_key), daemon=True).start()
         return job_id
 
     def job(self, job_id: str) -> dict | None:
@@ -456,14 +520,14 @@ class WebApp:
             )
         return job
 
-    def _run(self, job: dict, params: Params, takeoff: tuple[float, float] | None, result_key: str) -> None:
+    def _run(self, job: dict, params: Params, takeoff, spec: dict, result_key: str) -> None:
         with self._run_lock:
             job["status"] = "running"
             self._notify()
             console, t0 = sys.stdout, time.perf_counter()
             sys.stdout = _JobLog(console, job["log"], self._notify)
             try:
-                result = self.plan(params, takeoff)
+                result = self.plan(params, takeoff, spec)
                 with self._jobs_lock:
                     self._results[result_key] = result
                     while len(self._results) > MAX_RESULT_CACHE:
@@ -478,7 +542,7 @@ class WebApp:
                 job["elapsed_s"] = round(time.perf_counter() - t0, 2)
                 self._notify()
 
-    def plan(self, params: Params, takeoff: tuple[float, float] | None) -> dict:
+    def plan(self, params: Params, takeoff: tuple[float, float] | None, spec: dict | None = None) -> dict:
         """Run the planner and return everything the page draws (km for positions, m for altitudes)."""
         from ..export.flight_package import route_dict
         from ..planning import Planner, RouteOptimizer, default_takeoff
@@ -486,7 +550,8 @@ class WebApp:
         t, s = self.t, self.stride
         print(f"[web] objective {params.objective}, day {params.day_of_year}, {params.t_start:g}-{params.t_end:g} h")
         t0 = time.perf_counter()
-        lift = self._cached_lift(params)
+        spec = spec or {"model": "base", "options": {}}
+        lift = self._cached_lift(params, spec)
         n_cached = len(lift.fields)
         # the half-hourly fields of the planner, and the one `default_takeoff` uses
         lift.prefetch(list(np.arange(params.t_start, params.t_end + 1e-6, 0.5)) + [params.t_start + 1.0])
@@ -523,12 +588,13 @@ class WebApp:
                     [lonlat(prof[:, 0], prof[:, 1]), np.round(prof[:, 2]), np.round(prof[:, 3], 4), np.round(ground)]
                 ),
                 turnpoints_lonlat=lonlat(tp[:, 0], tp[:, 1]),
-                # [lon, lat, flight altitude m, ground altitude m] every TRACK_STEP_M at most: the 3D track
+                # [lon, lat, flight altitude m, ground altitude m, local hour] every TRACK_STEP_M at most: 3D track
                 track=np.column_stack(
                     [
                         lonlat(dense[:, 0], dense[:, 1]),
                         np.round(dense[:, 2]),
                         np.round(t.sample(t.z, dense[:, 0], dense[:, 1])),
+                        np.round(dense[:, 3], 5),
                     ]
                 ),
             )
@@ -540,6 +606,8 @@ class WebApp:
         lon, lat = t.xy_to_lonlat(*takeoff)
         return dict(
             lift_name=lift.name,
+            lift_model=spec["model"],
+            lift_attribution=None if spec["model"] == "base" else self.lift_choices[spec["model"]].attribution,
             takeoff=dict(
                 x_km=round(takeoff[0] / 1000, 3),
                 y_km=round(takeoff[1] / 1000, 3),

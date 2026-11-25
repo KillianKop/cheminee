@@ -100,6 +100,21 @@ function buildForm() {
   $("btn-reset-weather").addEventListener("click", () => {
     document.querySelectorAll("#weather-fields input").forEach((i) => (i.value = ""));
   });
+  buildLiftChoice();
+  $("play").addEventListener("click", togglePlay);
+  $("replay-route").addEventListener("change", () => startReplay(Number($("replay-route").value)));
+  $("replay-time").addEventListener("input", () => {
+    const r = replayRoute();
+    replay.hour = r.t_start + (Number($("replay-time").value) / 1000) * (r.t_end - r.t_start);
+    updateReplay();
+  });
+  $("replay-follow").addEventListener("change", updateReplay);
+  document.addEventListener("keydown", (ev) => {
+    if (ev.code === "Space" && !$("replay").hidden && !["INPUT", "SELECT", "TEXTAREA"].includes(ev.target.tagName)) {
+      ev.preventDefault();
+      togglePlay();
+    }
+  });
   $("btn-weather").addEventListener("click", previewWeather);
   $("btn-plan").addEventListener("click", plan);
   $("btn-clear-takeoff").addEventListener("click", () => setTakeoff(null));
@@ -152,10 +167,34 @@ function request() {
   };
   if ($("date").value) req.date = $("date").value;
   if (state.takeoff) req.takeoff = { lon: state.takeoff.lon, lat: state.takeoff.lat };
+  const model = $("lift-model").value || "base", options = {};
+  document.querySelectorAll("#lift-options input").forEach((input) => {
+    if (input.value !== "") options[input.dataset.option] = Number(input.value);
+  });
+  req.lift = { model, options };
   document.querySelectorAll("#weather-fields input").forEach((input) => {
     if (input.value !== "") req.weather[input.dataset.field] = Number(input.value);
   });
   return req;
+}
+
+// Extra lift models offered by the server (add-ons such as kk7): shown only when there is a choice.
+function buildLiftChoice() {
+  const models = state.cfg.lift_models || { base: { label: "cheminee lift model", options: {} } };
+  for (const [name, m] of Object.entries(models)) $("lift-model").append(el("option", { value: name }, m.label));
+  $("lift-choice").hidden = Object.keys(models).length < 2;
+  const show = () => {
+    const m = models[$("lift-model").value];
+    $("lift-options").innerHTML = "";
+    for (const [key, o] of Object.entries(m.options)) {
+      $("lift-options").append(el("label", {}, `${o.label}${o.unit ? ` (${o.unit})` : ""}`,
+        el("input", { type: "number", min: o.min, max: o.max, step: o.step, value: o.default, "data-option": key })));
+    }
+    $("lift-note").textContent = m.note || "";
+    $("lift-note").hidden = !m.note;
+  };
+  $("lift-model").addEventListener("change", show);
+  show();
 }
 
 // -- map ------------------------------------------------------------------------------------ //
@@ -446,8 +485,11 @@ function showResult(result, elapsed, total) {
     ? `${result.routes.length} routes (${timing}) · ${result.lift_name} lift. Click a route to show it.`
     : `No flight found with this weather (${timing}). Try a later takeoff, another takeoff or the free distance.`,
     !result.routes.length);
+  $("extra-attribution").textContent = result.lift_attribution || "";
+  $("extra-attribution").hidden = !result.lift_attribution;
   listRoutes();
   drawResult();
+  setupReplay();
 }
 
 function drawResult() {
@@ -458,7 +500,7 @@ function drawResult() {
     type: "Feature", properties: { color: r.color, route: k },
     geometry: { type: "LineString", coordinates: r.path.map((p) => [p[0], p[1]]) },
   })) });
-  state.track.setRoutes(shown.map(([r]) => r));
+  state.track.setRoutes(shown.map(([r, k]) => ({ ...r, id: k })));
   map.getSource("turnpoints").setData({ type: "FeatureCollection", features: shown.flatMap(([r]) => [
     { type: "Feature", properties: { color: r.color }, geometry: { type: "LineString", coordinates: r.turnpoints_lonlat } },
     ...r.turnpoints_lonlat.map((c) => ({ type: "Feature", properties: { color: r.color }, geometry: { type: "Point", coordinates: c } })),
@@ -468,6 +510,108 @@ function drawResult() {
     geometry: { type: "Point", coordinates: c },
   })) });
   showLift();
+}
+
+// -- replay ------------------------------------------------------------------------------- //
+const replay = { route: 0, hour: null, playing: false, last: 0, cum: [] };
+
+function replayRoute() {
+  return state.result.routes[replay.route];
+}
+
+function setupReplay() {
+  replay.playing = false;
+  $("play").textContent = "▶";
+  const routes = state.result.routes;
+  $("replay").hidden = !routes.length;
+  if (state.track) state.track.setReplay(null, null);
+  if (!routes.length) return;
+  $("replay-route").innerHTML = "";
+  routes.forEach((r, k) => $("replay-route").append(el("option", { value: k }, `${k + 1}. ${r.label} ${r.distance_km} km`)));
+  startReplay(0);
+}
+
+function startReplay(k) {
+  replay.route = k;
+  $("replay-route").value = k;
+  const r = replayRoute();
+  // cumulative distance along the path, for the distance flown
+  replay.cum = [0];
+  for (let i = 1; i < r.path.length; i++) {
+    const [lon0, lat0] = r.path[i - 1], [lon1, lat1] = r.path[i];
+    const mLon = 111320 * Math.cos((lat0 * Math.PI) / 180);
+    replay.cum.push(replay.cum[i - 1] + Math.hypot((lon1 - lon0) * mLon, (lat1 - lat0) * 111320));
+  }
+  replay.hour = r.t_start;
+  if (!state.shown.has(k)) {
+    state.shown.add(k);
+    listRoutes();
+    drawResult();
+  }
+  updateReplay();
+}
+
+// State of the flight at `hour`, interpolated along the route profile.
+function flightAt(r, hour) {
+  const p = r.path;
+  let i = 1;
+  while (i < p.length - 1 && p[i][3] < hour) i++;
+  const a = p[i - 1], b = p[i];
+  const f = b[3] > a[3] ? Math.min(Math.max((hour - a[3]) / (b[3] - a[3]), 0), 1) : 1;
+  const mix = (j) => a[j] + f * (b[j] - a[j]);
+  const climbing = Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]) < 1e-7;
+  const vario = b[3] > a[3] ? (b[2] - a[2]) / ((b[3] - a[3]) * 3600) : 0;
+  return { lon: mix(0), lat: mix(1), alt: mix(2), ground: mix(4), vario, climbing,
+    flown: replay.cum[i - 1] + f * (replay.cum[i] - replay.cum[i - 1]) };
+}
+
+function updateReplay() {
+  const r = replayRoute();
+  if (!r) return;
+  replay.hour = Math.min(Math.max(replay.hour, r.t_start), r.t_end);
+  const s = flightAt(r, replay.hour);
+  $("replay-time").value = Math.round(((replay.hour - r.t_start) / Math.max(r.t_end - r.t_start, 1e-6)) * 1000);
+  $("replay-clock").textContent = fmtHour(replay.hour);
+  const sign = s.vario >= 0 ? "+" : "−";
+  $("replay-info").textContent = `${Math.round(s.alt)} m · ${Math.round(s.alt - s.ground)} m above ground · ` +
+    `${sign}${Math.abs(s.vario).toFixed(1)} m/s ${s.climbing ? "climbing" : "gliding"} · ${(s.flown / 1000).toFixed(1)} km flown`;
+  if (state.track) state.track.setReplay(replay.route, replay.hour);
+  // the lift overlay and the ceiling follow the replay
+  const hours = state.result.lift.hours;
+  let best = 0;
+  hours.forEach((h, i) => { if (Math.abs(h - replay.hour) < Math.abs(hours[best] - replay.hour)) best = i; });
+  if (best !== state.hourIdx) {
+    state.hourIdx = best;
+    $("hour").value = best;
+    showLift();
+  }
+  if ($("replay-follow").checked && state.map) state.map.jumpTo({ center: [s.lon, s.lat] });
+}
+
+function togglePlay() {
+  const r = replayRoute();
+  if (!r) return;
+  replay.playing = !replay.playing;
+  $("play").textContent = replay.playing ? "❚❚" : "▶";
+  if (replay.playing) {
+    if (replay.hour >= r.t_end - 1e-6) replay.hour = r.t_start; // play again from the start
+    replay.last = performance.now();
+    requestAnimationFrame(tick);
+  }
+}
+
+function tick(now) {
+  if (!replay.playing) return;
+  const r = replayRoute();
+  replay.hour += ((now - replay.last) / 1000) * Number($("replay-speed").value) / 3600;
+  replay.last = now;
+  if (replay.hour >= r.t_end) {
+    replay.hour = r.t_end;
+    replay.playing = false;
+    $("play").textContent = "▶";
+  }
+  updateReplay();
+  if (replay.playing) requestAnimationFrame(tick);
 }
 
 // -- route list and altitude profile ------------------------------------------------------- //

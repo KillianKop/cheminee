@@ -66,6 +66,11 @@
       </select></label>
       <label>Routes <input type="number" id="n_routes" min="1" max="10" step="1"></label>
     </div>
+    <div id="lift-choice" hidden>
+      <label>Lift model <select id="lift-model"></select></label>
+      <div id="lift-options" class="grid2"></div>
+      <p id="lift-note" class="hint"></p>
+    </div>
     <button id="btn-plan" class="primary">Compute flights</button>
     <div id="status" class="status" hidden></div>
     <pre id="log" hidden></pre>
@@ -74,7 +79,22 @@
 </aside>
 
 <main>
-  <div id="map"></div>
+  <div id="map-box">
+    <div id="map"></div>
+    <div id="extra-attribution" class="map-note" hidden></div>
+  </div>
+  <div id="replay" hidden>
+    <button id="play" class="icon" title="play / pause (space)" aria-label="play">▶</button>
+    <select id="replay-route" title="route to replay"></select>
+    <input type="range" id="replay-time" min="0" max="1000" step="1" aria-label="replay time">
+    <b id="replay-clock"></b>
+    <span id="replay-info"></span>
+    <label>speed <select id="replay-speed">
+      <option value="60">×60</option><option value="150">×150</option><option value="300" selected>×300</option>
+      <option value="600">×600</option><option value="1200">×1200</option>
+    </select></label>
+    <label><input type="checkbox" id="replay-follow"> follow</label>
+  </div>
   <div id="toolbar">
     <label>Map <select id="basemap">
       <option value="topo">OpenTopoMap</option>

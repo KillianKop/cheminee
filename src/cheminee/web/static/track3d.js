@@ -6,6 +6,8 @@
 // - A translucent curtain hangs from the glides down to the ground.
 // - The ceiling of the selected hour is a translucent plane over the computed area, framed by a line: a visual
 //   reference to judge the flight altitudes.
+// - Replay: the part of the replayed route already flown is bright, the rest faded, and the glider is a point at
+//   its position with a line down to the ground.
 // - Positions use the matrix MapLibre draws the terrain with (`modelViewProjectionMatrix`: world pixels in x/y,
 //   metres in z, terrain elevation included), so the track and the relief line up exactly. Coordinates are
 //   relative to a local origin so that float32 keeps centimetre precision.
@@ -20,6 +22,8 @@ const CURTAIN_ALPHA = 0.15;
 const CEILING_COLOR = "#2b6fd6";
 const CEILING_ALPHA = 0.1;
 const CEILING_LINE_PX = 2;
+const FADED_ALPHA = 0.3; // routes and parts of the route not being replayed
+const GLIDER_PX = 16;
 
 const LINE_VS = `
 attribute vec3 a_pos;
@@ -46,6 +50,25 @@ const LINE_FS = `
 precision mediump float;
 uniform vec4 u_color;
 void main() { gl_FragColor = vec4(u_color.rgb * u_color.a, u_color.a); }`;
+const POINT_VS = `
+attribute vec3 a_pos;
+uniform mat4 u_matrix;
+uniform float u_ex;
+uniform float u_size;
+void main() {
+  gl_Position = u_matrix * vec4(a_pos.xy, a_pos.z * u_ex, 1.0);
+  gl_PointSize = u_size;
+}`;
+const POINT_FS = `
+precision mediump float;
+uniform vec4 u_color;
+void main() {
+  vec2 c = gl_PointCoord * 2.0 - 1.0;
+  float r = dot(c, c);
+  if (r > 1.0) discard;
+  vec3 col = mix(u_color.rgb, vec3(1.0), smoothstep(0.45, 0.6, r) * (1.0 - smoothstep(0.75, 0.95, r)));
+  gl_FragColor = vec4(col, 1.0);
+}`;
 const CURTAIN_VS = `
 attribute vec3 a_pos;
 uniform mat4 u_matrix;
@@ -84,28 +107,29 @@ function hexColor(hex, alpha) {
   return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255, alpha];
 }
 
-// Track rows [lon, lat, flight altitude, ground altitude] -> points {x, y (mercator), z, ground, glide}, with
-// spirals in place of the climbs.
+// Track rows [lon, lat, flight altitude, ground altitude, hour] -> points {x, y (mercator), z, ground, t, glide},
+// with spirals in place of the climbs.
 function trackPoints(track) {
   const pts = [];
   const merc = (lon, lat) => maplibregl.MercatorCoordinate.fromLngLat({ lng: lon, lat });
-  const push = (lon, lat, z, ground, glide) => {
+  const push = (lon, lat, z, ground, t, glide) => {
     const m = merc(lon, lat);
-    pts.push({ x: m.x, y: m.y, z, ground, glide });
+    pts.push({ x: m.x, y: m.y, z, ground, t, glide });
   };
   for (let i = 0; i < track.length; i++) {
-    const [lon, lat, alt, ground] = track[i];
+    const [lon, lat, alt, ground, hour] = track[i];
     const next = track[i + 1];
     const mLat = 111320, mLon = 111320 * Math.cos((lat * Math.PI) / 180);
     const climbing = next && Math.hypot((next[0] - lon) * mLon, (next[1] - lat) * mLat) < 1 && next[2] > alt + 1;
-    push(lon, lat, alt, ground, true); // track points carry the curtain, spiral points do not
+    push(lon, lat, alt, ground, hour, true); // track points carry the curtain, spiral points do not
     if (!climbing) continue;
     const turns = (next[2] - alt) / SPIRAL_GAIN_PER_TURN_M;
     const n = Math.max(SPIRAL_POINTS_PER_TURN, Math.round(turns * SPIRAL_POINTS_PER_TURN));
     for (let k = 1; k < n; k++) {
       const f = k / n, a = 2 * Math.PI * turns * f;
       const r = SPIRAL_RADIUS_M * Math.min(1, 4 * Math.min(f, 1 - f) * turns); // ease in and out of the spiral
-      push(lon + (r * Math.cos(a)) / mLon, lat + (r * Math.sin(a)) / mLat, alt + (next[2] - alt) * f, ground, false);
+      const z = alt + (next[2] - alt) * f, t = hour + (next[4] - hour) * f;
+      push(lon + (r * Math.cos(a)) / mLon, lat + (r * Math.sin(a)) / mLat, z, ground, t, false);
     }
   }
   return pts;
@@ -122,6 +146,7 @@ class TrackLayer {
     this.exaggeration = 1;
     this.meshes = [];
     this.ceilingMesh = null;
+    this.replay = null; // {id, hour}
     const o = maplibregl.MercatorCoordinate.fromLngLat({ lng: origin[0], lat: origin[1] });
     this.origin = [o.x, o.y];
   }
@@ -131,6 +156,7 @@ class TrackLayer {
     this.gl = gl;
     this.line = compile(gl, LINE_VS, LINE_FS);
     this.surface = compile(gl, CURTAIN_VS, LINE_FS);
+    this.point = compile(gl, POINT_VS, POINT_FS);
     this.upload();
     this.uploadCeiling();
   }
@@ -140,9 +166,10 @@ class TrackLayer {
     this.freeCeiling();
     gl.deleteProgram(this.line);
     gl.deleteProgram(this.surface);
+    gl.deleteProgram(this.point);
   }
 
-  // routes: [{color, track}] of the routes to show
+  // routes: [{id, color, track}] of the routes to show
   setRoutes(routes) {
     this.routes = routes;
     if (this.gl) this.upload();
@@ -153,6 +180,12 @@ class TrackLayer {
   setCeiling(bounds, alt) {
     this.ceiling = alt === null ? null : { bounds, alt };
     if (this.gl) this.uploadCeiling();
+    this.repaint();
+  }
+
+  // Replay route `id` at local `hour` (null: no replay).
+  setReplay(id, hour) {
+    this.replay = id === null ? null : { id, hour };
     this.repaint();
   }
 
@@ -230,7 +263,10 @@ class TrackLayer {
       for (let i = 0; i < pts.length - 1; i++) {
         if (pts[i].glide && pts[i + 1].glide) idx.push(2 * i, 2 * i + 1, 2 * i + 2, 2 * i + 1, 2 * i + 3, 2 * i + 2);
       }
-      this.meshes.push({ color: r.color, line: this.lineMesh(rel), curtain: this.surfaceMesh(vertices, idx) });
+      this.meshes.push({
+        id: r.id, color: r.color, rel, times: pts.map((p) => p.t),
+        line: this.lineMesh(rel), curtain: this.surfaceMesh(vertices, idx), ground: pts.map((p) => p.ground),
+      });
     }
   }
 
@@ -258,7 +294,26 @@ class TrackLayer {
     gl.disableVertexAttribArray(pos);
   }
 
-  drawLine(mesh, width, color) {
+  // Number of points of a mesh flown at `hour` (times are sorted).
+  static flown(times, hour) {
+    let lo = 0, hi = times.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (times[mid] <= hour) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+  }
+
+  // Position [x, y, z] and ground altitude of the glider at `hour`.
+  static gliderAt(mesh, hour) {
+    const k = Math.min(Math.max(TrackLayer.flown(mesh.times, hour), 1), mesh.times.length - 1);
+    const t0 = mesh.times[k - 1], t1 = mesh.times[k];
+    const f = t1 > t0 ? Math.min(Math.max((hour - t0) / (t1 - t0), 0), 1) : 1;
+    const a = mesh.rel[k - 1], b = mesh.rel[k];
+    return { pos: [0, 1, 2].map((i) => a[i] + f * (b[i] - a[i])), ground: mesh.ground[k - 1] + f * (mesh.ground[k] - mesh.ground[k - 1]) };
+  }
+
+  drawLine(mesh, width, color, first = 0, segments = null) {
     const gl = this.gl, loc = (name) => gl.getAttribLocation(this.line, name);
     const attrs = [[loc("a_pos"), 3, 0], [loc("a_prev"), 3, 12], [loc("a_next"), 3, 24], [loc("a_side"), 1, 36]];
     gl.uniform1f(gl.getUniformLocation(this.line, "u_width"), width * (window.devicePixelRatio || 1));
@@ -269,7 +324,8 @@ class TrackLayer {
       gl.vertexAttribPointer(l, size, gl.FLOAT, false, 40, offset);
     }
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.idx);
-    gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
+    const count = segments === null ? mesh.count - first * 6 : Math.min(segments * 6, mesh.count - first * 6);
+    if (count > 0) gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_SHORT, first * 6 * 2);
     for (const [l] of attrs) gl.disableVertexAttribArray(l);
   }
 
@@ -295,7 +351,40 @@ class TrackLayer {
     gl.uniform1f(gl.getUniformLocation(this.line, "u_ex"), this.exaggeration);
     gl.uniform2fv(gl.getUniformLocation(this.line, "u_viewport"), [gl.drawingBufferWidth, gl.drawingBufferHeight]);
     if (this.ceilingMesh) this.drawLine(this.ceilingMesh.frame, CEILING_LINE_PX, hexColor(CEILING_COLOR, 0.8));
-    for (const m of this.meshes) this.drawLine(m.line, TRACK_OUTLINE_PX, [0.07, 0.08, 0.1, 0.5]);
-    for (const m of this.meshes) this.drawLine(m.line, TRACK_LINE_PX, hexColor(m.color, 1));
+    const replayed = this.replay && this.meshes.find((m) => m.id === this.replay.id);
+    if (!replayed) {
+      for (const m of this.meshes) this.drawLine(m.line, TRACK_OUTLINE_PX, [0.07, 0.08, 0.1, 0.5]);
+      for (const m of this.meshes) this.drawLine(m.line, TRACK_LINE_PX, hexColor(m.color, 1));
+      return;
+    }
+    // replay: other routes and the part still to fly are faded, the flown part is bright
+    for (const m of this.meshes) if (m !== replayed) this.drawLine(m.line, TRACK_LINE_PX, hexColor(m.color, FADED_ALPHA));
+    const k = TrackLayer.flown(replayed.times, this.replay.hour); // points flown
+    this.drawLine(replayed.line, TRACK_LINE_PX, hexColor(replayed.color, FADED_ALPHA), Math.max(k - 1, 0));
+    this.drawLine(replayed.line, TRACK_OUTLINE_PX, [0.07, 0.08, 0.1, 0.5], 0, Math.max(k - 1, 0));
+    this.drawLine(replayed.line, TRACK_LINE_PX, hexColor(replayed.color, 1), 0, Math.max(k - 1, 0));
+    this.drawGlider(replayed, matrix);
+  }
+
+  drawGlider(mesh, matrix) {
+    const gl = this.gl;
+    const { pos, ground } = TrackLayer.gliderAt(mesh, this.replay.hour);
+    const drop = this.lineMesh([pos, [pos[0], pos[1], ground]]);
+    this.drawLine(drop, 1.5, [0.07, 0.08, 0.1, 0.8]);
+    this.deleteMesh(drop);
+    gl.useProgram(this.point);
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.point, "u_matrix"), false, matrix);
+    gl.uniform1f(gl.getUniformLocation(this.point, "u_ex"), this.exaggeration);
+    gl.uniform1f(gl.getUniformLocation(this.point, "u_size"), GLIDER_PX * (window.devicePixelRatio || 1));
+    gl.uniform4fv(gl.getUniformLocation(this.point, "u_color"), hexColor(mesh.color, 1));
+    const buf = this.buffer(gl.ARRAY_BUFFER, new Float32Array(pos));
+    const loc = gl.getAttribLocation(this.point, "a_pos");
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 12, 0);
+    gl.disable(gl.DEPTH_TEST); // the glider stays visible behind a ridge
+    gl.drawArrays(gl.POINTS, 0, 1);
+    gl.enable(gl.DEPTH_TEST);
+    gl.disableVertexAttribArray(loc);
+    gl.deleteBuffer(buf);
   }
 }
