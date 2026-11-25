@@ -13,8 +13,10 @@ Three kinds of samples are extracted from each flight:
 - background samples: target = 0 with a small weight, random points of the DEM at random
                       instants of the flight ("pseudo-absences": nobody ever flew there).
 
-Weather of a flight: read from `<track>.weather.json` (a serialised `Weather`) when the
-file exists, otherwise estimated from the track (`weather_from_track`).
+Weather of a flight: read from `<track>.weather.json` when the file exists, otherwise
+estimated from the track (`weather_from_track`). The file holds one `Weather`, or the weather
+at three points of the flight (`cheminee fetch-weather`): each sample then takes the weather
+of the nearest point.
 """
 
 from __future__ import annotations
@@ -28,7 +30,8 @@ from ..domain import Terrain
 from ..igc import IgcTrack, ThermalConfig, detect_thermals, estimate_wind, read_igc
 from ..igc.thermals import vertical_speed
 from ..lift import features as ft
-from ..weather import Weather
+from ..weather import Weather, WeatherPoint, load_points
+from ..weather.points import nearest_point
 
 
 @dataclass
@@ -79,13 +82,17 @@ def samples_from_track(
     cfg: DatasetConfig,
     rng: np.random.Generator,
     thermal_cfg: ThermalConfig | None = None,
-    weather: Weather | None = None,
+    weather: Weather | list[WeatherPoint] | None = None,
 ):
-    """Return (X, y, w) for one flight, or None if it has no usable thermal on the DEM."""
+    """Return (X, y, w) for one flight, or None if it has no usable thermal on the DEM. `weather` may be the
+    weather at a few points of the flight: each sample then takes the weather of the nearest point."""
     x, y = terrain.lonlat_to_xy(track.lon, track.lat)
     thermals = [th for th in detect_thermals(track.t, x, y, track.alt, thermal_cfg) if terrain.contains(th.x, th.y)]
     if not thermals:
         return None
+    points = [q for q in weather if q.lon is not None] if isinstance(weather, list) else []
+    if isinstance(weather, list):
+        weather = weather[0].weather if weather else None
     if weather is None:
         weather = weather_from_track(track, thermals)
 
@@ -124,8 +131,18 @@ def samples_from_track(
     target += [0.0] * n_bg
     weight += [cfg.bg_weight] * n_bg
 
-    static = ft.sample_static(terrain, stack, np.array(px), np.array(py))
-    X = ft.assemble(static, track.day_of_year, np.array(pt) / 3600.0, terrain.lat_mid, terrain.lon_mid, weather)
+    px, py, hours = np.array(px), np.array(py), np.array(pt) / 3600.0
+    static = ft.sample_static(terrain, stack, px, py)
+    if len(points) > 1:  # weather of the nearest point of the flight
+        qx, qy = terrain.lonlat_to_xy(np.array([q.lon for q in points]), np.array([q.lat for q in points]))
+        near = nearest_point(qx, qy, px, py)
+        X = np.zeros((len(px), len(ft.FEATURE_NAMES)), dtype=np.float32)
+        for k, q in enumerate(points):
+            m = near == k
+            if m.any():
+                X[m] = ft.assemble(static[m], track.day_of_year, hours[m], terrain.lat_mid, terrain.lon_mid, q.weather)
+    else:
+        X = ft.assemble(static, track.day_of_year, hours, terrain.lat_mid, terrain.lon_mid, weather)
     return X, np.array(target, dtype=np.float32), np.array(weight, dtype=np.float32)
 
 
@@ -137,7 +154,7 @@ def build_dataset(terrain: Terrain, igc_paths: list, cfg: DatasetConfig | None =
     for k, path in enumerate(sorted(Path(p) for p in igc_paths)):
         try:
             sidecar = path.with_suffix(".weather.json")
-            weather = Weather.load(str(sidecar)) if sidecar.exists() else None
+            weather = load_points(str(sidecar)) if sidecar.exists() else None
             n_sidecar += weather is not None
             res = samples_from_track(read_igc(str(path)), terrain, stack, cfg, rng, weather=weather)
         except ValueError as exc:

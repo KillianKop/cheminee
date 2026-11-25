@@ -26,9 +26,12 @@ cheminee train $DEM data/igc --out models/local/thermal_net.pt --report models/l
 cheminee serve $DEM --model models/local/thermal_net.pt     # or plan / export --model ...
 ```
 
-- `fetch-weather` makes one Open-Meteo archive request per flight and skips flights that already have their
-  `.weather.json` (rerun it after adding tracks). Météo-France archives start in September 2022; older flights
-  fall back to the weather estimated from the track.
+- `fetch-weather` takes the weather at three points of each flight (the turnpoints of a triangle, or start,
+  middle and farthest point of a straight cross), at most three Open-Meteo archive requests per flight, fewer
+  when flights share a day and place. The positions sent are rounded to about 2 km. Flights that already have
+  their `.weather.json` are skipped (rerun it after adding tracks; `--overwrite` to fetch them again).
+  Météo-France archives start in September 2022; older flights fall back to the weather estimated from the
+  track.
 - Only the part of a track inside the DEM is used. The sample DEM covers about 18 x 18 km around Digne: for
   flights that go further, train on a larger COP30 extract of the area (`data/dem/cop30/`, see
   [../dem/README.md](../dem/README.md)).

@@ -255,29 +255,58 @@ def cmd_sounding(args) -> None:
     plot_emagram(sounding, args.hour_utc, args.out)
 
 
+SITE_ROUND_DEG = 0.02  # positions sent to Open-Meteo are rounded (~2 km): the route of a flight stays private
+
+
 def cmd_fetch_weather(args) -> None:
-    """Download the archived weather of each IGC flight and write its `.weather.json` sidecar."""
+    """Download the archived weather of each IGC flight at three points of it (`igc.sites.flight_sites`: the
+    turnpoints of a triangle, or start / middle / far point of a straight cross) and write its `.weather.json`."""
     import time
 
     from .igc import find_igc, read_igc
-    from .weather import openmeteo
+    from .igc.sites import flight_sites
+    from .weather import WeatherPoint, openmeteo, save_points
 
     paths = find_igc(args.igc_dir)
-    done = 0
+    payloads: dict[tuple, dict] = {}  # flights of the same day and place share their requests
+    done = requests = 0
     for path in paths:
         sidecar = path.with_suffix(".weather.json")
         if sidecar.exists() and not args.overwrite:
             continue
         try:
             track = read_igc(str(path))
-            lat, lon = float(track.lat[0]), float(track.lon[0])  # takeoff
-            payload = openmeteo.fetch_payload(lat, lon, track.date, args.forecast_model)
-            openmeteo.weather_from_payload(payload, lon, Weather(breeze_kmh=0.0)).save(str(sidecar))
+            points = []
+            for idx, role in flight_sites(track):
+                lat = round(round(float(track.lat[idx]) / SITE_ROUND_DEG) * SITE_ROUND_DEG, 4)
+                lon = round(round(float(track.lon[idx]) / SITE_ROUND_DEG) * SITE_ROUND_DEG, 4)
+                key = (track.date, args.forecast_model, lat, lon)
+                if key not in payloads:
+                    if requests:
+                        time.sleep(args.pause)
+                    payloads[key] = openmeteo.fetch_payload(lat, lon, track.date, args.forecast_model)
+                    requests += 1
+                try:
+                    weather = openmeteo.weather_from_payload(payloads[key], lon, Weather(breeze_kmh=0.0))
+                except openmeteo.ForecastUnavailable as exc:
+                    print(f"[fetch-weather] {path.name} {role}: {exc}")
+                    continue
+                hour = round(float(track.t[idx]) / 3600.0, 3)
+                points.append(WeatherPoint(lon, lat, weather, role, hour_utc=hour))
+            if not points:
+                continue
+            url = openmeteo.build_url(points[0].lat, points[0].lon, track.date, args.forecast_model)
+            meta = dict(
+                source="Open-Meteo " + ("historical forecast" if url.startswith(openmeteo.ARCHIVE_URL) else "forecast"),
+                model=args.forecast_model,
+                date=track.date.isoformat(),
+                position_rounding_deg=SITE_ROUND_DEG,
+            )
+            save_points(str(sidecar), points, meta)
             done += 1
         except Exception as exc:  # one failing flight must not stop the batch
             print(f"[fetch-weather] {path.name}: {exc}")
-        time.sleep(args.pause)
-    print(f"[fetch-weather] {done} weather files written for {len(paths)} flights")
+    print(f"[fetch-weather] {done} weather files written for {len(paths)} flights, {requests} Open-Meteo requests")
 
 
 def cmd_export(args) -> None:
