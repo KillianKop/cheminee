@@ -180,3 +180,42 @@ def test_offline_cache_no_network(terrain, params, tmp_path, monkeypatch):
     # a layer that is not cached gives no data offline, without any request
     factory = kk7_factory(lambda t, p: HeuristicLift(t, p), 0.5, "jan", "07", zoom, str(tmp_path), offline=True)
     assert factory(terrain, params).blend == 0.0
+
+
+def test_kk7_lift_choice_in_the_web_interface(terrain, params, tmp_path, monkeypatch):
+    """`cheminee-kk7 serve` offers kk7 as a lift model of the cheminee page, offline here (cached tiles)."""
+    import argparse
+    import time
+
+    from cheminee_kk7.cli import KK7_NOTICE, kk7_lift_choice
+
+    from cheminee.web import WebApp
+
+    monkeypatch.setattr(
+        fetch.urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(AssertionError("network"))
+    )
+    zoom = 12
+    cover = tiles.tiles_covering(*tiles.terrain_bbox(terrain), zoom)
+    rgba = tiles.encode_tile(np.full((256, 256), 0.3))
+    for key in layer_keys("jul", "auto"):
+        for x, y in cover:
+            path = Path(fetch.tile_path(str(tmp_path), key, zoom, x, y))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            Image.fromarray(rgba, "RGBA").save(path)
+    args = argparse.Namespace(
+        kk7_blend=0.8,
+        kk7_season="auto",
+        kk7_time="auto",
+        kk7_zoom=zoom,
+        kk7_cache=str(tmp_path),
+        kk7_offline=True,
+        kk7_mode="boost",
+    )
+    app = WebApp(terrain, lambda t, p: HeuristicLift(t, p), params, lift_choices={"kk7": kk7_lift_choice(args)})
+    assert app.config()["lift_models"]["kk7"]["attribution"] == KK7_NOTICE
+    job_id = app.start_plan({"objective": "free", "lift": {"model": "kk7", "options": {"blend": 0.5}}})
+    while app.job(job_id)["status"] in ("queued", "running"):
+        time.sleep(0.05)
+    job = app.job(job_id)
+    assert job["status"] == "done", job.get("error")
+    assert "kk7" in job["result"]["lift_name"] and job["result"]["lift_attribution"] == KK7_NOTICE

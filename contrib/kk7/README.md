@@ -34,6 +34,7 @@ pip install -e contrib/kk7 --no-deps
 cheminee-kk7 compare data/output_hh.asc --hour 14        # figure -> data/kk7_compare.png
 cheminee-kk7 plan data/output_hh.asc                     # same options as `cheminee plan`
 cheminee-kk7 gui data/output_hh.asc
+cheminee-kk7 serve data/output_hh.asc                    # web interface with "cheminee + kk7" as lift model
 cheminee-kk7 fetch data/output_hh.asc                    # cache every season over the DEM (offline use)
 cheminee-kk7 plan data/output_hh.asc --kk7-offline       # cached tiles only, no network
 pytest contrib/kk7/tests                                 # no network

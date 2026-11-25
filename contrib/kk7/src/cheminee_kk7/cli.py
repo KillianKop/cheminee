@@ -14,6 +14,10 @@ from . import fetch, tiles
 from .lift import MODES, Kk7Lift, kk7_factory, layer_keys, load_layers
 
 KK7_NOTICE = "Thermal data: thermal.kk7.ch, CC BY-NC-SA 4.0"
+KK7_TERMS = (
+    "thermal.kk7.ch data: CC BY-NC-SA 4.0, non-commercial use only. Tiles are downloaded over the DEM on first "
+    "use and cached in data/kk7_cache."
+)
 
 
 def _add_kk7_args(sp: argparse.ArgumentParser) -> None:
@@ -94,6 +98,53 @@ def cmd_gui(args) -> None:
         print(f"[gui] saved {args.save}")
     else:
         app.plt.show()
+
+
+def kk7_lift_choice(args):
+    """The kk7 lift model as an extra choice of the cheminee web interface (cheminee itself never imports kk7)."""
+    from cheminee.web import LiftChoice
+
+    def make(base_factory, options):
+        return kk7_factory(
+            base_factory,
+            options["blend"],
+            args.kk7_season,
+            args.kk7_time,
+            args.kk7_zoom,
+            args.kk7_cache,
+            args.kk7_offline,
+            args.kk7_mode,
+        )
+
+    return LiftChoice(
+        label=f"cheminee + kk7 thermal climatology ({args.kk7_mode})",
+        make=make,
+        options_spec={"blend": ("kk7 weight", "0-1", 0.0, 1.0, 0.05, args.kk7_blend)},
+        attribution=KK7_NOTICE,
+        note=KK7_TERMS,
+    )
+
+
+def cmd_serve(args) -> None:
+    """cheminee web interface, with "cheminee + kk7" in the lift model choice."""
+    from cheminee.cli import lift_factory
+    from cheminee.domain import Terrain
+    from cheminee.web import WebApp, serve
+
+    terrain = Terrain.from_asc(args.dem)
+    fetch_payload = None
+    if not args.no_forecast:
+        from cheminee.weather import openmeteo
+
+        fetch_payload = openmeteo.fetch_payload
+    app = WebApp(
+        terrain,
+        lift_factory(args.model),
+        fetch_payload=fetch_payload,
+        dem_name=os.path.basename(args.dem),
+        lift_choices={"kk7": kk7_lift_choice(args)},
+    )
+    serve(app, args.port, args.open)
 
 
 def cmd_fetch(args) -> None:
@@ -181,6 +232,15 @@ def main(argv=None) -> None:
     sp.add_argument("--hour", type=float, default=14.0, help="local hour")
     sp.add_argument("--out", default=os.path.join("data", "kk7_compare.png"))
     sp.set_defaults(func=cmd_compare)
+
+    sp = sub.add_parser("serve", help="cheminee web interface with the kk7 lift model as a choice")
+    sp.add_argument("dem", help="ESRI ASCII grid (.asc), WGS84 lon/lat")
+    sp.add_argument("--model", help="ThermalNet checkpoint; without it the heuristic lift model is used")
+    sp.add_argument("--port", type=int, default=8765, help="port on 127.0.0.1")
+    sp.add_argument("--open", action="store_true", help="open the page in the default browser")
+    sp.add_argument("--no-forecast", action="store_true", help="disable Open-Meteo forecasts")
+    _add_kk7_args(sp)
+    sp.set_defaults(func=cmd_serve)
 
     sp = sub.add_parser("fetch", help="download the kk7 layers over a DEM into the cache (all seasons with auto)")
     sp.add_argument("dem")
