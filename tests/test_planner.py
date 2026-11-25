@@ -117,3 +117,22 @@ def test_overdevelopment_shortens_the_day(terrain, params):
     planner = _planner(terrain, stormy)
     assert planner.t_end < params.t_end
     assert all(r.times[-1] <= planner.t_end + 1e-9 for r in RouteOptimizer(planner).optimise("free"))
+
+
+def test_triangles_can_leave_the_takeoff_later(terrain, params):
+    """Regression: the triangle search used to leave only at the first possible time. On a slow November
+    morning that start reaches no thermal, while leaving later gives triangles."""
+    p = dataclasses.replace(
+        params, day_of_year=330, utc_offset=1.0, t_start=9.5, t_end=16.0, weather=Weather(breeze_kmh=0.0)
+    )
+    lift = HeuristicLift(terrain, p)
+    takeoff = default_takeoff(terrain, p, lift)
+    first_only = Planner(terrain, dataclasses.replace(p, triangle_departure_step_h=0.0), takeoff, lift, verbose=False)
+    assert RouteOptimizer(first_only).optimise("triangle") == []
+    planner = Planner(terrain, p, takeoff, lift, verbose=False)
+    triangles = RouteOptimizer(planner).optimise("triangle")
+    assert triangles
+    for r in triangles:
+        _check(r, planner, terrain)
+        assert r.kind in ("triangle", "fai")
+        assert r.times[0] > planner.launch_hour()  # they leave after the first possible time

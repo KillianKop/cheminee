@@ -40,7 +40,8 @@ class Params:
     max_visits: int = 2  # max visits of the same node (free distance)
     n_routes: int = 5  # number of (diverse) routes returned
     diversity: float = 0.5  # max Jaccard similarity between returned routes
-    max_triangle_evals: int = 30000  # budget of the triangle optimiser
+    max_triangle_evals: int = 30000  # budget of the triangle optimiser (per departure time)
+    triangle_departure_step_h: float = 0.5  # triangles also leave the takeoff later, every step (0: first time only)
     # Scoring: CFD coefficients (free distance over 3 turnpoints, flat triangle, FAI triangle)
     coef_free: float = 1.0
     coef_triangle: float = 1.2

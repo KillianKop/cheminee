@@ -2,7 +2,8 @@
 
 - `earliest`  : time-dependent Dijkstra (earliest arrival at every node).
 - `triangles` : exact scan of turnpoint triples by decreasing score; a triple is kept
-                if takeoff -> TP1 -> TP2 -> TP3 -> closing point is flyable in time.
+                if takeoff -> TP1 -> TP2 -> TP3 -> closing point is flyable in time. Several
+                departure times are tried: on a slow morning, leaving later can be the only way.
 - `to_goal`   : fastest route to a given point.
 - `optimise`  : best routes for an objective ("score", "free", "triangle", "fai").
 """
@@ -86,16 +87,61 @@ class RouteOptimizer:
 
     # -- triangles ------------------------------------------------------------------ #
     def triangles(self, fai_only: bool = False) -> list[Route]:
-        """Best closed triangles (flat or FAI), by decreasing points."""
+        """Best closed triangles (flat or FAI), by decreasing points.
+
+        The takeoff is left at the first possible time, then every `triangle_departure_step_h` until one hour
+        before the end of the window. Leaving later is searched only when it makes new thermal nodes reachable
+        (otherwise the earlier departure already covers it), and all results are merged with the usual
+        diversity rules.
+        """
         pl, p = self.pl, self.p
-        t0 = pl.launch_hour()
-        if t0 is None:
+        launch = pl.launch_hour()
+        if launch is None:
             return []
+        departures = [launch]
+        if p.triangle_departure_step_h > 0:
+            departures += list(
+                np.arange(launch + p.triangle_departure_step_h, pl.t_end - 1.0, p.triangle_departure_step_h)
+            )
+        seen: set[int] = set()
+        pool, n_eval, tried = [], 0, []
+        for t0 in departures:
+            a0, _ = self.earliest(0, float(t0), first=True)
+            reachable = {int(n) for n in np.flatnonzero(np.isfinite(a0))} - {0}
+            if not reachable - seen:
+                continue
+            seen |= reachable
+            routes, n = self._triangles_from(float(t0), fai_only)
+            pool += routes
+            n_eval += n
+            tried.append(f"{int(t0)}:{round(t0 % 1 * 60):02d}")
+        routes, kept_tps, kept_sets = [], [], []
+        for r in sorted(pool, key=lambda r: -r.points):
+            tps = {int(r.nodes[k]) for k in r.turnpoints}
+            node_set = set(r.nodes)
+            if any(len(tps & o) >= 2 for o in kept_tps):
+                continue
+            if any(len(node_set & o) / len(node_set | o) > p.diversity for o in kept_sets):
+                continue
+            routes.append(r)
+            kept_tps.append(tps)
+            kept_sets.append(node_set)
+            if len(routes) >= p.n_routes:
+                break
+        self._log(
+            f"[search] triangles: departures {', '.join(tried) or 'none'}, {n_eval} candidate triples scanned, "
+            f"{len(self._cache)} fastest-path trees, {len(routes)} routes kept"
+        )
+        return routes
+
+    def _triangles_from(self, t0: float, fai_only: bool) -> tuple[list[Route], int]:
+        """Best triangles leaving the takeoff at `t0`, and the number of triples scanned."""
+        pl, p = self.pl, self.p
         a0, p0 = self.earliest(0, t0, first=True)
         cand = np.flatnonzero(np.isfinite(a0))
         cand = cand[cand != 0]
         if len(cand) < 3:
-            return []
+            return [], 0
         d = pl.dist
         i, j, k = np.meshgrid(cand, cand, cand, indexing="ij")
         i, j, k = i.ravel(), j.ravel(), k.ravel()
@@ -107,6 +153,8 @@ class RouteOptimizer:
         # necessary condition: the three legs alone cannot be flown faster than the fastest
         # ground pace observed from the takeoff (with a 50 % margin)
         reach = cand[np.isfinite(a0[cand]) & (a0[cand] > t0)]
+        if len(reach) == 0:
+            return [], 0
         pace = 1.5 * (d[0, reach] / (a0[reach] - t0)).max()  # m / h
         keep &= a0[i] + (d[i, j] + d[j, k]) / pace <= pl.t_end
         if fai_only:
@@ -137,11 +185,7 @@ class RouteOptimizer:
             kept_sets.append(node_set)
             if len(routes) >= p.n_routes:
                 break
-        self._log(
-            f"[search] triangles: {n_eval} of {len(idx)} candidate triples scanned, "
-            f"{len(self._cache)} fastest-path trees, {len(routes)} routes kept"
-        )
-        return routes
+        return routes, n_eval
 
     def _fly_triangle(self, tp1: int, tp2: int, tp3: int, perimeter: float, a0, p0):
         """Fastest takeoff -> TP1 -> TP2 -> TP3 -> closing point. None if not flyable in time."""

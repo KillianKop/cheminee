@@ -6,6 +6,13 @@ The flight package has its own version number (`version` in the JSON, see [docs/
 
 ## [Unreleased]
 
+### Fixed
+
+- Triangle search: the takeoff was only left at the first possible time, so a slow morning (no thermal reachable
+  yet) gave no triangle at all. Later departures are now tried every `Params.triangle_departure_step_h` (30 min)
+  when they reach new thermals, and the results are merged. Example: forecast of 27 November 2026 near Digne,
+  0 -> 1 triangle (17 km); unchanged results on the `good_day` preset (search time 0.3 -> 0.7 s).
+
 ### Added
 
 - Local web interface (`cheminee serve DEM`): 3D terrain, takeoff picked by click, presets, Open-Meteo forecast
