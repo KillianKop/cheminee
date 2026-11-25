@@ -11,6 +11,10 @@ The flight package has its own version number (`version` in the JSON, see [docs/
 - Local web interface (`cheminee serve DEM`): 3D terrain, takeoff picked by click, presets, Open-Meteo forecast
   and hand-set weather values, hourly weather preview, flight computation with live log, routes and lift field
   in 3D. Standard library HTTP server bound to 127.0.0.1, plotly.js served from the plotly package.
+- Web map with MapLibre GL JS 4.7.1 (vendored, BSD-3) instead of plotly: background map (OpenTopoMap, OpenStreetMap
+  or none), 3D relief and hillshade from elevation tiles cut on the fly from the planner's DEM (Terrain-RGB,
+  `/tiles/dem/{z}/{x}/{y}.png`), computed area outlined and its surroundings darkened, lift overlay per hour,
+  thermal nodes coloured by climb rate, altitude profile of each route, `/api/elevation`. Page 1.6 MB -> 235 kB.
 - Web interface speed: lift fields computed in parallel and cached per weather / day, identical requests answered
   from memory, gzip, ETag / browser cache for plotly.js and the DEM grid (5.1 MB -> 1.6 MB for a first load, 0 for
   a reload), long polling instead of a 600 ms poll.

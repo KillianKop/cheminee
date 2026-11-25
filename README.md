@@ -28,7 +28,7 @@ Python 3.10 or later.
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 tar -xzf data/rasters_COP30_sample.tar.gz -C data/     # sample DEM -> data/output_hh.asc
-pytest                                                 # 54 tests, about 15 s
+pytest                                                 # 57 tests, about 15 s
 cheminee serve data/output_hh.asc --open               # web interface (3D map) on http://127.0.0.1:8765
 cheminee gui data/output_hh.asc                        # 2D interface
 ```
@@ -124,21 +124,29 @@ open the URL printed by the command in a browser, save the answer and pass it wi
 `cheminee serve DEM [--model CKPT] [--port 8765] [--open] [--no-forecast]` starts a local server (bound to
 127.0.0.1) and prints its address. In the browser:
 
-1. **Takeoff**: click on the 3D terrain (drag to rotate, scroll to zoom). Without a click, the planner chooses.
+1. **Takeoff**: click on the map, inside the computed area (dashed outline). Right-drag or Ctrl-drag tilts and
+   rotates the 3D view, scroll zooms. Without a click, the planner chooses.
 2. **Day**: date (sets the day of year, needed by the forecast), takeoff and landing times.
 3. **Weather**: a preset, optionally the Open-Meteo forecast of the date at the takeoff, and any value forced by
    hand. **Preview the weather** shows ceiling, cloud base, wind and sunshine hour by hour.
 4. **Flights**: objective and number of routes, then **Compute flights**. The planner log is shown while it
-   runs. Routes are drawn in 3D with their turnpoints; click a route to show or hide it, **segments** lists its
-   climbs and glides. The toolbar colours the terrain by the lift index of any hour.
+   runs. Routes, turnpoints and thermal nodes are drawn on the map; click a route to show or hide it,
+   **profile & segments** shows its altitude profile (flight, ground, ceiling) and lists its climbs and glides.
+   The toolbar overlays the lift index of any hour, switches the background map and sets the relief.
 
-Standard library server, no new dependency: the page uses the plotly.js shipped with the plotly package, so it
-works offline except for the forecast (`--no-forecast` disables it).
+The map is [MapLibre GL JS](https://maplibre.org) 4.7.1 (BSD-3, vendored in `src/cheminee/web/static/vendor/`,
+no CDN). The 3D relief comes from elevation tiles the server cuts on the fly from **the same DEM as the
+planner** (`web/tiles.py`), so what you see is what is computed; outside the DEM the relief slopes down to a flat
+floor and the map is darkened. The background map (OpenTopoMap or OpenStreetMap tiles) is the only part loaded
+from the network: choose **none (offline)** to work without network, with the relief and hillshade only. The
+Open-Meteo forecast also needs the network (`--no-forecast` disables it). Standard library server, no new Python
+dependency.
 
-Speed: the hourly lift fields are computed in parallel and kept for the weather and day in use, so trying another
-takeoff or objective only reruns the route search (about 0.5 s instead of 1.4 s on the sample DEM); an identical
-request is answered from memory. Responses are gzipped, plotly.js and the DEM grid are cached by the browser (a
-reload transfers nothing new), and the page follows a computation by long polling.
+Speed: the page weighs 235 kB gzipped (MapLibre included); map and relief tiles load with the zoom; the hourly
+lift fields are computed in parallel and kept for the weather and day in use, so trying another takeoff or
+objective only reruns the route search (about 0.5 s instead of 1.4 s on the sample DEM); an identical request is
+answered from memory. Responses are gzipped and cached by the browser, and the page follows a computation by long
+polling.
 
 ### 2D interface
 
@@ -201,7 +209,7 @@ src/cheminee/
 │   └── optimizer.py       fastest paths, triangles, goal, overall objective
 ├── export/              flight package for the vautour app (flight_package.py)
 ├── viz/                 matplotlib GUI (gui.py), plotly 3D scene (scene3d.py), emagram (emagram.py)
-├── web/                 local web interface: JSON API (server.py) and page (static/)
+├── web/                 local web interface: JSON API (server.py), DEM tiles (tiles.py), MapLibre page (static/)
 └── cli.py               `cheminee` entry point (composition root)
 schema/                  flight-package.v1.schema.json, the contract with vautour
 tests/                   pytest suite on an analytical terrain + a real Open-Meteo answer

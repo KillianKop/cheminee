@@ -9,7 +9,7 @@ flowchart LR
         gui[viz/gui.py]
         s3d[viz/scene3d.py]
         exp[export/flight_package.py]
-        web[web/server.py]
+        web[web/server.py, web/tiles.py]
     end
     subgraph usecases [Use cases]
         opt[planning/optimizer.py]
@@ -62,8 +62,9 @@ flowchart LR
 - Implementation choices are made in one place, `cli._flight_setup` / `cli.build_weather` / `cli.lift_factory`
   (composition root). `web.WebApp` receives its lift factory and forecast downloader from `cli.cmd_serve`.
 - `torch` is only imported by `lift/neural.py` and `training/`; `plotly` only by `viz/scene3d.py`; the network
-  (HTTP) only by `weather/openmeteo.fetch`. `web/` serves the plotly.js file of the plotly package from disk
-  without importing plotly, and only listens on 127.0.0.1.
+  (HTTP) only by `weather/openmeteo.fetch`. `web/` only listens on 127.0.0.1; its page uses MapLibre GL JS,
+  vendored with its licence in `web/static/vendor/<name>-<version>/` (a new version goes in a new directory,
+  which is cached for a year by browsers). The browser, not the server, loads the background map tiles.
 - `export/` turns planner results into the versioned JSON contract described in
   [flight-package.md](flight-package.md). It reads the planner and the optimiser, never the reverse.
 - Accepted exception: `igc/synthetic.py` uses the planner to simulate flights. It is a testing tool, not a
@@ -117,5 +118,5 @@ and no test touches the network.
 | `test_weather.py` | cloud base, wind profile, breeze, serialisation, polar, effect of each parameter on lift, cast shadows, Open-Meteo conversion, sounding analysis of a real API answer |
 | `test_planner.py` | consistency of routes and profiles, closing and FAI rule of triangles, flight to a goal, head / tail wind, unflyable weather, overdevelopment |
 | `test_igc_and_training.py` | IGC round trip, thermal detection, wind estimation, weather side file, end-to-end training |
-| `test_web.py` | web API: grid, weather overrides and cached forecast, refused requests, planning from a clicked takeoff, lift field and result caches, read-only shared fields, long polling, HTTP end to end (static files, path traversal, gzip, ETag / 304) |
+| `test_web.py` | web API: grid, weather overrides and cached forecast, refused requests, planning from a clicked takeoff, lift field and result caches, read-only shared fields, long polling, DEM elevation tiles (Terrain-RGB round trip, same heights as the planner, slope outside the DEM), elevation endpoint, HTTP end to end (static and vendored files, path traversal, gzip, ETag / 304) |
 | `test_export.py` | flight package against the JSON schema, content, continuous segments, routing graph, merged short glides, write / read back |

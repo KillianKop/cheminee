@@ -17,7 +17,7 @@ The physics is explained in [docs/model.md](docs/model.md). Read it before chang
 ```bash
 pip install -e ".[dev]"                                # once; CPU torch is enough
 tar -xzf data/rasters_COP30_sample.tar.gz -C data/     # once; sample DEM -> data/output_hh.asc
-pytest                                                 # 54 tests, ~15 s, no network
+pytest                                                 # 57 tests, ~15 s, no network
 pytest tests/test_planner.py -k triangle               # one area
 ruff check . && ruff format --check .                  # lint + format check (CI runs both)
 ruff check --fix . && ruff format .                    # fix
@@ -35,7 +35,9 @@ Set `MPLBACKEND=Agg` when running anything that draws without a display.
 - The planner only sees the `LiftModel` protocol (`field(hour_local) -> (ny, nx) array in [0, 1]`) and a
   `Weather`. Choosing implementations happens only in `cli._flight_setup` / `cli.build_weather`.
 - Heavy or optional imports stay local: `torch` only in `lift/neural.py` and `training/`; `plotly` only in
-  `viz/scene3d.py`; HTTP only in `weather/openmeteo.fetch` (the `web/` server only listens on 127.0.0.1). Importing `cheminee.planning` must not import torch.
+  `viz/scene3d.py`; HTTP only in `weather/openmeteo.fetch` (the `web/` server only listens on 127.0.0.1). Front-end
+  libraries are vendored with their licence in `web/static/vendor/<name>-<version>/`, never loaded from a CDN.
+  Importing `cheminee.planning` must not import torch.
 - Network features must be computed by `lift/features.py` for both training and inference. Changing the feature
   list invalidates checkpoints (they are refused at load time): retrain `models/thermal_net.pt` in the same PR.
 - `weather/openmeteo.py` keeps the pure conversion (`weather_from_payload`) apart from the network call (`fetch`),
