@@ -6,6 +6,17 @@ The flight package has its own version number (`version` in the JSON, see [docs/
 
 ## [Unreleased]
 
+### Added
+
+- Local web interface (`cheminee serve DEM`): 3D terrain, takeoff picked by click, presets, Open-Meteo forecast
+  and hand-set weather values, hourly weather preview, flight computation with live log, routes and lift field
+  in 3D. Standard library HTTP server bound to 127.0.0.1, plotly.js served from the plotly package.
+- Web interface speed: lift fields computed in parallel and cached per weather / day, identical requests answered
+  from memory, gzip, ETag / browser cache for plotly.js and the DEM grid (5.1 MB -> 1.6 MB for a first load, 0 for
+  a reload), long polling instead of a 600 ms poll.
+- `Weather.override(name, value)`: an explicit value replaces the hourly series of that quantity (used by the
+  command line and the web interface).
+
 ## [0.1.0] - 2026-11-24
 
 First public version.

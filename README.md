@@ -28,7 +28,8 @@ Python 3.10 or later.
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 tar -xzf data/rasters_COP30_sample.tar.gz -C data/     # sample DEM -> data/output_hh.asc
-pytest                                                 # 38 tests, about 10 s
+pytest                                                 # 54 tests, about 15 s
+cheminee serve data/output_hh.asc --open               # web interface (3D map) on http://127.0.0.1:8765
 cheminee gui data/output_hh.asc                        # 2D interface
 ```
 
@@ -39,6 +40,7 @@ torch on Linux: `pip install torch --index-url https://download.pytorch.org/whl/
 
 | Command | What it does |
 |---|---|
+| `cheminee serve DEM` | local web interface: 3D map, takeoff by click, weather and forecast, flights |
 | `cheminee gui DEM` | 2D interface: weather sliders, routes, lift map by hour |
 | `cheminee plan DEM` | compute flights and print them as text |
 | `cheminee view3d DEM --out flights.html` | standalone interactive 3D scene (opens in a browser) |
@@ -117,6 +119,27 @@ open the URL printed by the command in a browser, save the answer and pass it wi
 | `free` | free distance via 3 turnpoints (open, 4 legs) | 1.0 |
 | `score` | the three kinds ranked together by points | |
 
+### Web interface
+
+`cheminee serve DEM [--model CKPT] [--port 8765] [--open] [--no-forecast]` starts a local server (bound to
+127.0.0.1) and prints its address. In the browser:
+
+1. **Takeoff**: click on the 3D terrain (drag to rotate, scroll to zoom). Without a click, the planner chooses.
+2. **Day**: date (sets the day of year, needed by the forecast), takeoff and landing times.
+3. **Weather**: a preset, optionally the Open-Meteo forecast of the date at the takeoff, and any value forced by
+   hand. **Preview the weather** shows ceiling, cloud base, wind and sunshine hour by hour.
+4. **Flights**: objective and number of routes, then **Compute flights**. The planner log is shown while it
+   runs. Routes are drawn in 3D with their turnpoints; click a route to show or hide it, **segments** lists its
+   climbs and glides. The toolbar colours the terrain by the lift index of any hour.
+
+Standard library server, no new dependency: the page uses the plotly.js shipped with the plotly package, so it
+works offline except for the forecast (`--no-forecast` disables it).
+
+Speed: the hourly lift fields are computed in parallel and kept for the weather and day in use, so trying another
+takeoff or objective only reruns the route search (about 0.5 s instead of 1.4 s on the sample DEM); an identical
+request is answered from memory. Responses are gzipped, plotly.js and the DEM grid are cached by the browser (a
+reload transfers nothing new), and the page follows a computation by long polling.
+
 ### 2D interface
 
 Left click: move the takeoff. Right click: set a goal (fastest route). Weather and time sliders, then
@@ -178,6 +201,7 @@ src/cheminee/
 │   └── optimizer.py       fastest paths, triangles, goal, overall objective
 ├── export/              flight package for the vautour app (flight_package.py)
 ├── viz/                 matplotlib GUI (gui.py), plotly 3D scene (scene3d.py), emagram (emagram.py)
+├── web/                 local web interface: JSON API (server.py) and page (static/)
 └── cli.py               `cheminee` entry point (composition root)
 schema/                  flight-package.v1.schema.json, the contract with vautour
 tests/                   pytest suite on an analytical terrain + a real Open-Meteo answer
