@@ -6,6 +6,15 @@ The flight package has its own version number (`version` in the JSON, see [docs/
 
 ## [Unreleased]
 
+### Added
+
+- Web interface: replay timeline under the map (play / pause, speed, follow): flown part bright, glider with a
+  line to the ground, altitude, height above ground, climb rate and distance flown; lift overlay and ceiling
+  follow the replay time. The 3D track carries the hour of every point.
+- Web interface: extra lift models plugged in by the caller (`web.LiftChoice`), offered in a "Lift model"
+  menu with their options, licence note and map attribution. `cheminee-kk7 serve` (contrib) offers the kk7
+  climatology this way; cheminee itself does not depend on it.
+
 ### Fixed
 
 - Triangle search: the takeoff was only left at the first possible time, so a slow morning (no thermal reachable

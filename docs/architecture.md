@@ -60,7 +60,9 @@ flowchart LR
   `Weather` object: it does not care whether lift comes from a formula or a network, nor whether the weather
   comes from a preset, a file or a forecast.
 - Implementation choices are made in one place, `cli._flight_setup` / `cli.build_weather` / `cli.lift_factory`
-  (composition root). `web.WebApp` receives its lift factory and forecast downloader from `cli.cmd_serve`.
+  (composition root). `web.WebApp` receives its lift factory and forecast downloader from `cli.cmd_serve`, and
+  optional extra lift models (`web.LiftChoice`) from add-ons such as `cheminee-kk7 serve`: data under other
+  licences stay in `contrib/`, never imported by `src/cheminee`.
 - `torch` is only imported by `lift/neural.py` and `training/`; `plotly` only by `viz/scene3d.py`; the network
   (HTTP) only by `weather/openmeteo.fetch`. `web/` only listens on 127.0.0.1; its page uses MapLibre GL JS,
   vendored with its licence in `web/static/vendor/<name>-<version>/` (a new version goes in a new directory,
@@ -118,5 +120,5 @@ and no test touches the network.
 | `test_weather.py` | cloud base, wind profile, breeze, serialisation, polar, effect of each parameter on lift, cast shadows, Open-Meteo conversion, sounding analysis of a real API answer |
 | `test_planner.py` | consistency of routes and profiles, closing and FAI rule of triangles, triangles leaving after the first possible time, flight to a goal, head / tail wind, unflyable weather, overdevelopment |
 | `test_igc_and_training.py` | IGC round trip, thermal detection, wind estimation, weather side file, end-to-end training |
-| `test_web.py` | web API: grid, weather overrides and cached forecast, refused requests, planning from a clicked takeoff, lift field and result caches, read-only shared fields, long polling, DEM elevation tiles (Terrain-RGB round trip, same heights as the planner, slope outside the DEM), elevation endpoint, dense 3D track above the ground, HTTP end to end (static and vendored files, path traversal, gzip, ETag / 304) |
+| `test_web.py` | web API: grid, weather overrides and cached forecast, refused requests, planning from a clicked takeoff, lift field and result caches, read-only shared fields, long polling, DEM elevation tiles (Terrain-RGB round trip, same heights as the planner, slope outside the DEM), elevation endpoint, dense 3D track above the ground with the hour of every point, extra lift models plugged in by the caller, HTTP end to end (static and vendored files, path traversal, gzip, ETag / 304) |
 | `test_export.py` | flight package against the JSON schema, content, continuous segments, routing graph, merged short glides, write / read back |

@@ -28,7 +28,7 @@ Python 3.10 or later.
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 tar -xzf data/rasters_COP30_sample.tar.gz -C data/     # sample DEM -> data/output_hh.asc
-pytest                                                 # 59 tests, about 15 s
+pytest                                                 # 60 tests, about 15 s
 cheminee serve data/output_hh.asc --open               # web interface (3D map) on http://127.0.0.1:8765
 cheminee gui data/output_hh.asc                        # 2D interface
 ```
@@ -135,6 +135,9 @@ open the URL printed by the command in a browser, save the answer and pass it wi
    turnpoints and thermal nodes are drawn on the ground.
    Click a route to show or hide it,
    **profile & segments** shows its altitude profile (flight, ground, ceiling) and lists its climbs and glides.
+   The **replay** bar under the map plays a route back in time (play / pause with the space bar, speed, follow
+   the glider): the flown part is bright, the glider shows its altitude, height above ground, climb or sink
+   rate and distance flown, and the lift overlay and the ceiling follow its time.
    The toolbar picks the hour and shows its lift index and its ceiling (a translucent plane over the computed
    area), switches the background map and sets the relief (true scale by default; exaggerating it makes every
    height look bigger).
@@ -146,6 +149,10 @@ floor and the map is darkened. The background map (OpenTopoMap or OpenStreetMap 
 from the network: choose **none (offline)** to work without network, with the relief and hillshade only. The
 Open-Meteo forecast also needs the network (`--no-forecast` disables it). Standard library server, no new Python
 dependency.
+
+Lift model: `cheminee serve` uses the heuristic model (or ThermalNet with `--model`). Add-ons can offer more in
+the page through `web.LiftChoice`: `cheminee-kk7 serve` (in `contrib/kk7`, optional, kk7 data CC BY-NC-SA,
+non-commercial) adds the thermal.kk7.ch climatology; cheminee itself never depends on it.
 
 Speed: the page weighs 235 kB gzipped (MapLibre included); map and relief tiles load with the zoom; the hourly
 lift fields are computed in parallel and kept for the weather and day in use, so trying another takeoff or

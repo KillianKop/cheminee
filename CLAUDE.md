@@ -17,7 +17,7 @@ The physics is explained in [docs/model.md](docs/model.md). Read it before chang
 ```bash
 pip install -e ".[dev]"                                # once; CPU torch is enough
 tar -xzf data/rasters_COP30_sample.tar.gz -C data/     # once; sample DEM -> data/output_hh.asc
-pytest                                                 # 59 tests, ~15 s, no network
+pytest                                                 # 60 tests, ~15 s, no network
 pytest tests/test_planner.py -k triangle               # one area
 ruff check . && ruff format --check .                  # lint + format check (CI runs both)
 ruff check --fix . && ruff format .                    # fix
@@ -38,6 +38,8 @@ Set `MPLBACKEND=Agg` when running anything that draws without a display.
   `viz/scene3d.py`; HTTP only in `weather/openmeteo.fetch` (the `web/` server only listens on 127.0.0.1). Front-end
   libraries are vendored with their licence in `web/static/vendor/<name>-<version>/`, never loaded from a CDN.
   Importing `cheminee.planning` must not import torch.
+- Data under other licences (thermal.kk7.ch, CC BY-NC-SA) stay in `contrib/` add-ons. They plug into the web
+  page through `web.LiftChoice`; nothing under `src/cheminee` imports `contrib/`, so cheminee stays MIT.
 - Network features must be computed by `lift/features.py` for both training and inference. Changing the feature
   list invalidates checkpoints (they are refused at load time): retrain `models/thermal_net.pt` in the same PR.
 - `weather/openmeteo.py` keeps the pure conversion (`weather_from_payload`) apart from the network call (`fetch`),
