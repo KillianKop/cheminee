@@ -4,7 +4,7 @@ The flight package is the **contract** between cheminee (which computes) and the
 pilot in flight). It is a single JSON document, produced by:
 
 ```bash
-cheminee export data/output_hh.asc --out flight.json
+cheminee export data/dem/sample/output_hh.asc --out flight.json
 ```
 
 The formal definition is the JSON schema [`schema/flight-package.v1.schema.json`](../schema/flight-package.v1.schema.json).
@@ -92,7 +92,7 @@ from `nodes[j].climb`. This is exactly what cheminee's planner computes.
 ```bash
 # from cheminee, with vautour cloned next to it
 cp schema/flight-package.v1.schema.json ../vautour/schema/
-cheminee export data/output_hh.asc --out ../vautour/public/flight.json
+cheminee export data/dem/sample/output_hh.asc --out ../vautour/public/flight.json
 ```
 
 With the default options this command reproduces vautour's sample byte for byte (apart from `meta.created`).

@@ -8,6 +8,7 @@ The flight package has its own version number (`version` in the JSON, see [docs/
 
 ### Added
 
+- `data/dem/cop30/` for your own larger Copernicus DEM extracts (ignored by git, see `data/dem/README.md`).
 - `data/igc/` for your own IGC tracks and `models/local/` for the networks trained on them, both ignored by
   git (only `data/igc/README.md` is versioned); `*.igc` is now ignored everywhere in the repository.
 - Web interface: replay timeline under the map (play / pause, speed, follow): flown part bright, glider with a
@@ -34,6 +35,12 @@ The flight package has its own version number (`version` in the JSON, see [docs/
   that is not ready yet, final glide at the safety margin. The search
   keeps 3 neighbours per sector instead of 2 (`neighbours_per_sector`) to skip weak thermals. Sample DEM: June
   triangle 3.9 -> 3.3 h (14.9 -> 17.5 km/h), June free distance 80 -> 87 km, 27 November triangle 17 -> 24 km.
+
+### Changed
+
+- The sample DEM moved to `data/dem/sample/`: extract it with
+  `tar -xzf data/dem/sample/rasters_COP30_sample.tar.gz -C data/dem/sample/`, then use
+  `data/dem/sample/output_hh.asc`.
 
 ### Fixed
 

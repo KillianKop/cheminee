@@ -12,7 +12,13 @@ dist/
 # Data: only the README and the sample DEM are versioned (IGC files are personal data)
 data/*
 !data/README.md
-!data/rasters_COP30_sample.tar.gz
+# data/dem/: sample/ holds the versioned sample DEM archive, cop30/ your own larger extracts
+!data/dem/
+data/dem/*
+!data/dem/README.md
+!data/dem/sample/
+data/dem/sample/*
+!data/dem/sample/rasters_COP30_sample.tar.gz
 # data/igc/: your own IGC tracks for training; only its README is versioned
 !data/igc/
 data/igc/*

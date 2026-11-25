@@ -5,8 +5,8 @@ seed 0) over the sample DEM. It validates the training pipeline; replace it with
 before any practical use. Reproduce it with:
 
 ```bash
-cheminee synth-igc data/output_hh.asc --out data/igc_synthetic -n 300
-cheminee train data/output_hh.asc data/igc_synthetic --out models/thermal_net.pt
+cheminee synth-igc data/dem/sample/output_hh.asc --out data/igc_synthetic -n 300
+cheminee train data/dem/sample/output_hh.asc data/igc_synthetic --out models/thermal_net.pt
 ```
 
 `local/` (ignored by git) holds the networks trained on your own tracks (`data/igc/`), which must not be

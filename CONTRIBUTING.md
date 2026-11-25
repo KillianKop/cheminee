@@ -9,7 +9,7 @@ request early if you prefer to show code.
 python -m venv .venv && source .venv/bin/activate
 pip install torch --index-url https://download.pytorch.org/whl/cpu   # optional: avoids the large CUDA build
 pip install -e ".[dev]"
-tar -xzf data/rasters_COP30_sample.tar.gz -C data/
+tar -xzf data/dem/sample/rasters_COP30_sample.tar.gz -C data/dem/sample/
 pytest
 ```
 

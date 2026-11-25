@@ -38,7 +38,7 @@ jobs:
       - run: pytest
       - name: Smoke test on the sample DEM
         run: |
-          tar -xzf data/rasters_COP30_sample.tar.gz -C data/
-          cheminee plan data/output_hh.asc --objective score
-          cheminee export data/output_hh.asc --out /tmp/flight.json
+          tar -xzf data/dem/sample/rasters_COP30_sample.tar.gz -C data/dem/sample/
+          cheminee plan data/dem/sample/output_hh.asc --objective score
+          cheminee export data/dem/sample/output_hh.asc --out /tmp/flight.json
           python -c "import json, jsonschema; jsonschema.validate(json.load(open('/tmp/flight.json')), json.load(open('schema/flight-package.v1.schema.json')))"

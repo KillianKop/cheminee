@@ -27,10 +27,10 @@ Python 3.10 or later.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-tar -xzf data/rasters_COP30_sample.tar.gz -C data/     # sample DEM -> data/output_hh.asc
+tar -xzf data/dem/sample/rasters_COP30_sample.tar.gz -C data/dem/sample/   # sample DEM -> output_hh.asc
 pytest                                                 # 66 tests, about 15 s
-cheminee serve data/output_hh.asc --open               # web interface (3D map) on http://127.0.0.1:8765
-cheminee gui data/output_hh.asc                        # 2D interface
+cheminee serve data/dem/sample/output_hh.asc --open    # web interface (3D map) on http://127.0.0.1:8765
+cheminee gui data/dem/sample/output_hh.asc             # 2D interface
 ```
 
 Dependencies: numpy, scipy, matplotlib, pillow, plotly, torch (CPU is enough). To avoid the large CUDA build of
@@ -54,7 +54,7 @@ torch on Linux: `pip install torch --index-url https://download.pytorch.org/whl/
 `cheminee <command> --help` lists every option. Common examples:
 
 ```bash
-DEM=data/output_hh.asc
+DEM=data/dem/sample/output_hh.asc     # or your own larger extract in data/dem/cop30/
 
 cheminee gui $DEM --model models/thermal_net.pt      # with the neural lift model
 cheminee plan $DEM --weather strong_unstable         # weather preset
@@ -243,7 +243,7 @@ tests/                   pytest suite on an analytical terrain + a real Open-Met
 scripts/                 synthetic_benchmark.py, plot_speed_to_fly.py
 docs/                    model.md, architecture.md, flight-package.md, figures
 models/                  thermal_net.pt (trained on synthetic tracks)
-data/                    sample DEM; data/igc/ for your IGC tracks (not versioned)
+data/                    dem/sample/ sample DEM, dem/cop30/ your DEMs, igc/ your IGC tracks (not versioned)
 ```
 
 ## Documentation
@@ -281,10 +281,10 @@ long as the licence notice is kept.
 
 Data shipped in the repository keeps its own licence:
 
-- `data/rasters_COP30_sample.tar.gz` is an extract of the Copernicus DEM GLO-30. Any product made from it must
-  carry the notice: *"produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space
-  GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved"*. `cheminee
-  export` writes it into every flight package.
+- `data/dem/sample/rasters_COP30_sample.tar.gz` is an extract of the Copernicus DEM GLO-30 (as is any extract you
+  put in `data/dem/cop30/`). Any product made from it must carry the notice: *"produced using Copernicus
+  WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by
+  the European Union and ESA; all rights reserved"*. `cheminee export` writes it into every flight package.
 - Forecasts come from [Open-Meteo](https://open-meteo.com) (data under CC BY 4.0, from Météo-France models). The
   free API is for non-commercial use; credit Open-Meteo wherever its data is shown.
 
