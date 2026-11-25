@@ -20,6 +20,20 @@
     <p id="takeoff-info" class="hint">Click on the map, inside the computed area, to place the takeoff. Without
       one, the planner picks a high spot with good lift.</p>
     <button id="btn-clear-takeoff" class="secondary" hidden>Let the planner choose</button>
+    <div id="wx-points">
+      <h3><span class="dot-wx"></span> Weather points <span class="hint">(with the forecast)</span></h3>
+      <div class="seg" role="group" aria-label="A click on the map places">
+        <button id="click-takeoff" class="on" title="a click on the map moves the takeoff">Click places the takeoff</button>
+        <button id="click-weather" title="a click on the map adds a weather point (Esc: back to the takeoff)">
+          Click adds a weather point</button>
+      </div>
+      <div class="grid2">
+        <label>Number of points, takeoff included
+          <input type="number" id="weather_points" min="1" max="10" step="1"></label>
+        <div class="wx-actions"><button id="btn-reset-points" class="link" hidden>Remove the placed points</button></div>
+      </div>
+      <p id="points-hint" class="hint"></p>
+    </div>
   </section>
 
   <section>
@@ -40,13 +54,7 @@
       <span class="hint">(network; at the takeoff, else the map centre)</span></label>
     <label>Forecast model <select id="forecast_model"></select></label>
     <p id="model-hint" class="hint"></p>
-    <label title="with a forecast: weather at the takeoff and at two points of a triangle around it, blended in between">
-      Weather points <select id="weather_points">
-        <option value="3">3: takeoff + 2 points around it</option>
-        <option value="1">1: takeoff only</option>
-      </select></label>
-    <p id="points-hint" class="hint">Shown on the map after a preview or a plan; drag points 2 and 3 to move them.
-      <button id="btn-reset-points" class="link" hidden>Back to automatic points</button></p>
+    <p class="hint">The forecast is taken at every weather point (section 1) and blended in between.</p>
     <label class="check"><input type="checkbox" id="shadows"> Terrain shadows (slower)</label>
     <details id="weather-details">
       <summary>Adjust values <span class="hint">(empty = preset / forecast)</span></summary>

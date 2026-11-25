@@ -23,7 +23,9 @@ const state = {
   map: null,
   takeoff: null, // {lon, lat, z}
   takeoffMarker: null,
-  weatherSites: null, // [[lon, lat], [lon, lat]] placed by hand (points 2 and 3); null: automatic
+  wxPlaced: [], // weather points 2..N placed by hand: [lon, lat], or null where the point is automatic
+  wxServer: null, // weather points of the last preview / plan (positions, ceilings), shown with the markers
+  clickMode: "takeoff", // what a click on the map places: "takeoff" or "weather"
   pointMarkers: [],
   result: null,
   hourIdx: 0,
@@ -126,11 +128,20 @@ function buildForm() {
       togglePlay();
     }
   });
-  $("weather_points").addEventListener("change", () => drawWeatherPoints(null));
+  $("weather_points").max = cfg.defaults.max_weather_points;
+  $("weather_points").addEventListener("change", () => setPointCount(Number($("weather_points").value)));
   $("btn-reset-points").addEventListener("click", () => {
-    state.weatherSites = null;
-    drawWeatherPoints(null);
+    state.wxPlaced = state.wxPlaced.map(() => null);
+    state.wxServer = null;
+    drawWeatherPoints();
   });
+  $("click-takeoff").addEventListener("click", () => setClickMode("takeoff"));
+  $("click-weather").addEventListener("click", () => setClickMode("weather"));
+  $("forecast").addEventListener("change", drawWeatherPoints);
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && state.clickMode === "weather") setClickMode("takeoff");
+  });
+  setPointCount(Number($("weather_points").value));
   $("btn-weather").addEventListener("click", previewWeather);
   $("btn-plan").addEventListener("click", plan);
   $("btn-clear-takeoff").addEventListener("click", () => setTakeoff(null));
@@ -205,10 +216,12 @@ function request() {
     shadows: $("shadows").checked,
     forecast: $("forecast").checked,
     forecast_model: $("forecast_model").value,
-    weather_points: Number($("weather_points").value),
+    weather_points: pointCount(),
     weather: {},
   };
-  if (state.weatherSites && req.weather_points === 3) req.weather_sites = state.weatherSites;
+  const placed = state.wxPlaced.slice(0, pointCount() - 1);
+  while (placed.length && placed[placed.length - 1] === null) placed.pop();
+  if (placed.length) req.weather_sites = placed;
   if ($("date").value) req.date = $("date").value;
   if (state.takeoff) req.takeoff = { lon: state.takeoff.lon, lat: state.takeoff.lat };
   const model = $("lift-model").value || "base", options = {};
@@ -360,11 +373,16 @@ function setRelief() {
 
 async function onMapClick(ev) {
   const { lng, lat } = ev.lngLat;
+  const what = state.clickMode === "weather" ? "Weather points" : "The takeoff";
   if (!insideDem(lng, lat)) {
-    setStatus("The takeoff must be inside the computed area (dashed outline).", true);
+    setStatus(`${what} must be inside the computed area (dashed outline).`, true);
     return;
   }
   setStatus("");
+  if (state.clickMode === "weather") {
+    addWeatherPoint(lng, lat);
+    return;
+  }
   try {
     const point = await api(`/api/elevation?lon=${lng.toFixed(6)}&lat=${lat.toFixed(6)}`);
     setTakeoff({ lon: lng, lat, z: point.z });
@@ -375,7 +393,8 @@ async function onMapClick(ev) {
 
 function setTakeoff(point) {
   state.takeoff = point;
-  if (!state.weatherSites) drawWeatherPoints(null); // automatic points follow the takeoff: shown again later
+  state.wxServer = null; // the automatic points follow the takeoff: known again after a preview or a plan
+  drawWeatherPoints();
   const info = $("takeoff-info");
   if (state.takeoffMarker) state.takeoffMarker.remove();
   state.takeoffMarker = null;
@@ -393,38 +412,107 @@ function setTakeoff(point) {
 }
 
 // -- weather points --------------------------------------------------------------------------- //
-// Markers of the weather points (from /api/weather or a plan result); points 2 and 3 can be dragged.
-function drawWeatherPoints(points) {
+// Point 1 is the takeoff. Points 2..N are placed by a click ("Click adds a weather point"), dragged, removed by a
+// right click; the server places the ones left empty around the takeoff (dashed markers, after a preview).
+function pointCount() {
+  return Math.max(1, Math.min(state.cfg.defaults.max_weather_points, Math.round(Number($("weather_points").value) || 1)));
+}
+
+function setPointCount(n) {
+  $("weather_points").value = n;
+  n = pointCount();
+  state.wxPlaced = Array.from({ length: n - 1 }, (_, k) => state.wxPlaced[k] ?? null);
+  state.wxServer = null;
+  drawWeatherPoints();
+}
+
+function setClickMode(mode) {
+  state.clickMode = mode;
+  $("click-takeoff").classList.toggle("on", mode === "takeoff");
+  $("click-weather").classList.toggle("on", mode === "weather");
+  state.map?.getCanvas().classList.toggle("placing", mode === "weather");
+  drawWeatherPoints();
+}
+
+function addWeatherPoint(lng, lat) {
+  let k = state.wxPlaced.indexOf(null);
+  if (k < 0) {
+    if (pointCount() >= state.cfg.defaults.max_weather_points) {
+      setStatus(`${state.cfg.defaults.max_weather_points} weather points at most: drag one, or right-click to ` +
+        "remove it.", true);
+      return;
+    }
+    state.wxPlaced.push(null);
+    $("weather_points").value = state.wxPlaced.length + 1;
+    k = state.wxPlaced.length - 1;
+  }
+  state.wxPlaced[k] = [lng, lat];
+  drawWeatherPoints();
+}
+
+function drawWeatherPoints() {
   state.pointMarkers.forEach((m) => m.remove());
   state.pointMarkers = [];
-  $("btn-reset-points").hidden = !state.weatherSites;
-  if (!points || !points.length || !state.map) return;
-  points.forEach((q, k) => {
+  const n = pointCount(), placed = state.wxPlaced.filter(Boolean).length, srv = state.wxServer || [];
+  $("btn-reset-points").hidden = !placed;
+  const forecast = $("forecast").checked;
+  $("points-hint").innerHTML = !forecast && n > 1
+    ? "Used with the Open-Meteo forecast only (section 3): without it the weather is the same everywhere."
+    : n === 1
+      ? "Forecast at the takeoff only. Raise the number, or click “adds a weather point” and click on the map."
+      : `Point 1 is the takeoff. ${placed} of ${n - 1} other points placed by you` +
+        (placed < n - 1 ? "; the others are placed around the takeoff (dashed, shown after a preview)" : "") +
+        ". Drag a point to move it, right-click to remove it.";
+  $("points-hint").classList.toggle("warn", !forecast && n > 1);
+  if (!state.map) return;
+  const at14 = (q) => {
     const hours = Object.keys(q.ceiling_m).map(Number);
-    const at = hours.reduce((a, b) => (Math.abs(b - 14) < Math.abs(a - 14) ? b : a), hours[0]);
-    const [dir, kmh] = q.wind_aloft[`${at}`];
-    const label = `${q.role} · ${q.ceiling_m[`${at}`]} m`;
-    const title = `${q.role}: ceiling ${q.ceiling_m[`${at}`]} m at ${fmtHour(at)}, max ` +
-      `${Math.max(...Object.values(q.ceiling_m))} m; wind at 3000 m ${kmh} km/h from ${dir}°` +
-      (k ? " · drag to move it" : "");
-    const node = el("div", { class: `marker-wx${k ? " movable" : " takeoff"}`, title }, label);
-    const marker = new maplibregl.Marker({ element: node, draggable: k > 0 }).setLngLat([q.lon, q.lat]).addTo(state.map);
-    if (k > 0) {
-      marker.on("dragend", () => {
-        const { lng, lat } = marker.getLngLat();
-        if (!insideDem(lng, lat)) {
-          setStatus("Weather points must stay inside the computed area: put back.", true);
-          marker.setLngLat([q.lon, q.lat]);
-          return;
-        }
-        const sites = state.pointMarkers.slice(1).map((m) => [m.getLngLat().lng, m.getLngLat().lat]);
-        state.weatherSites = sites;
-        $("btn-reset-points").hidden = false;
-        setStatus("Weather point moved: preview the weather or plan again to use it.");
-      });
-    }
+    return hours.reduce((a, b) => (Math.abs(b - 14) < Math.abs(a - 14) ? b : a), hours[0]);
+  };
+  const info = (q) => {
+    const h = at14(q), [dir, kmh] = q.wind_aloft[`${h}`];
+    return { ceil: q.ceiling_m[`${h}`], text: `ceiling ${q.ceiling_m[`${h}`]} m at ${fmtHour(h)} (max ` +
+      `${Math.max(...Object.values(q.ceiling_m))} m), wind at 3000 m ${kmh} km/h from ${dir}°` };
+  };
+  if (srv[0] && state.takeoff) { // ceiling of the takeoff point, next to the yellow marker
+    const label = el("div", { class: "wxlabel-anchor" }, el("span", {
+      class: "marker-wxlabel", title: `1 · ${srv[0].role}: ${info(srv[0]).text}` }, `1 · ${info(srv[0]).ceil} m`));
+    state.pointMarkers.push(new maplibregl.Marker({ element: label })
+      .setLngLat([srv[0].lon, srv[0].lat]).addTo(state.map));
+  }
+  for (let k = 1; k < n; k++) {
+    const mine = state.wxPlaced[k - 1], q = srv[k];
+    const pos = mine || (q ? [q.lon, q.lat] : null);
+    if (!pos) continue;
+    const known = q && Math.abs(q.lon - pos[0]) < 1e-4 && Math.abs(q.lat - pos[1]) < 1e-4 ? info(q) : null;
+    const node = el("div", {
+      class: `marker-wxpt${mine ? "" : " auto"}`,
+      title: `weather point ${k + 1}${mine ? "" : " (automatic)"}` + (known ? `: ${known.text}` : "") +
+        ` · drag to move${mine ? ", right-click to remove" : ""}`,
+    }, String(k + 1));
+    if (known) node.append(el("span", { class: "ceil" }, `${known.ceil} m`));
+    node.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!state.wxPlaced[k - 1]) return;
+      state.wxPlaced[k - 1] = null;
+      if (state.wxServer) state.wxServer[k] = null; // its automatic place is known after the next preview
+      drawWeatherPoints();
+    });
+    const marker = new maplibregl.Marker({ element: node, draggable: true }).setLngLat(pos).addTo(state.map);
+    marker.on("dragend", () => {
+      const { lng, lat } = marker.getLngLat();
+      if (!insideDem(lng, lat)) {
+        setStatus("Weather points must stay inside the computed area: put back.", true);
+        marker.setLngLat(pos);
+        return;
+      }
+      state.wxPlaced[k - 1] = [lng, lat];
+      setStatus("Weather point moved: preview the weather or plan again to use it.");
+      drawWeatherPoints();
+    });
     state.pointMarkers.push(marker);
-  });
+  }
 }
 
 // -- lift overlay -------------------------------------------------------------------------- //
@@ -546,7 +634,8 @@ async function previewWeather() {
       `<th>sun</th><th>instab.</th></tr></thead><tbody>${rows}</tbody></table>` +
       (points ? `<div class="sources">Table: at the takeoff. Max ceiling per weather point: ${points}</div>` : "") +
       `<div class="sources">m, km/h · arrows point where the wind blows · ${w.sources.join(" + ")}</div>`;
-    drawWeatherPoints(w.points);
+    state.wxServer = w.points;
+    drawWeatherPoints();
   } catch (err) {
     out.innerHTML = "";
     out.append(el("div", { class: "status error" }, err.message));
@@ -605,7 +694,8 @@ function showResult(result, elapsed, total) {
     ? `${result.routes.length} routes (${timing}) · ${result.lift_name} lift. Click a route to show it.`
     : `No flight found with this weather (${timing}). Try a later takeoff, another takeoff or the free distance.`,
     !result.routes.length);
-  drawWeatherPoints(result.weather_points);
+  state.wxServer = result.weather_points;
+  drawWeatherPoints();
   $("extra-attribution").textContent = result.lift_attribution || "";
   $("extra-attribution").hidden = !result.lift_attribution;
   listRoutes();
