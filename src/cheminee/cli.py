@@ -57,7 +57,8 @@ def _add_flight_args(sp: argparse.ArgumentParser) -> None:
     g.add_argument(
         "--forecast-model",
         default="meteofrance_seamless",
-        help="Open-Meteo `models` value (default: Meteo-France AROME / ARPEGE)",
+        help="Open-Meteo `models` value (default: Meteo-France AROME / ARPEGE); "
+        "the web interface lists tested ones (weather.openmeteo.FORECAST_MODELS)",
     )
     for opt, (_, text) in WEATHER_OPTIONS.items():
         g.add_argument(f"--{opt.replace('_', '-')}", type=float, help=text)
@@ -92,7 +93,10 @@ def build_weather(args, lat: float, lon: float) -> Weather:
     if payload is not None:
         from .weather import openmeteo
 
-        weather = openmeteo.weather_from_payload(payload, lon, weather)
+        try:
+            weather = openmeteo.weather_from_payload(payload, lon, weather)
+        except openmeteo.ForecastUnavailable as exc:
+            raise SystemExit(f"{args.forecast_model}: {exc}. Choose a model with a longer range.") from None
     for opt, (attr, _) in WEATHER_OPTIONS.items():
         value = getattr(args, opt)
         if value is not None:

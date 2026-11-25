@@ -24,6 +24,38 @@ from .sounding import Sounding
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 ARCHIVE_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"  # past dates, same parameters
 DEFAULT_MODEL = "meteofrance_seamless"  # AROME where available, ARPEGE elsewhere
+BEST_MATCH = "best_match"  # Open-Meteo's own choice: no `models` parameter
+
+# Models offered by the interfaces: Open-Meteo `models` value -> (label, grid spacing km over the Alps,
+# approximate forecast range in days, pressure levels, short name). Ranges change with the model runs: a forecast
+# that does not cover the flying day is refused by `weather_from_payload` anyway. Without pressure levels the
+# ceiling comes from the surface spread and the boundary layer height only.
+FORECAST_MODELS = {
+    "meteofrance_seamless": ("Météo-France AROME + ARPEGE", 1.5, 4, True, "MF seamless"),
+    "meteofrance_arome_france_hd": ("Météo-France AROME HD", 1.5, 1.5, False, "AROME HD"),
+    "meteofrance_arome_france": ("Météo-France AROME", 2.5, 2, True, "AROME"),
+    "meteofrance_arpege_europe": ("Météo-France ARPEGE Europe", 11, 4, True, "ARPEGE"),
+    "icon_seamless": ("DWD ICON (D2 + EU + global)", 2, 7, True, "ICON"),
+    "icon_d2": ("DWD ICON-D2", 2, 2, True, "ICON-D2"),
+    "ecmwf_ifs025": ("ECMWF IFS", 25, 10, True, "ECMWF"),
+    "ukmo_seamless": ("UK Met Office", 10, 7, True, "UKMO"),
+    "gfs_seamless": ("NOAA GFS", 25, 16, True, "GFS"),
+    BEST_MATCH: ("Open-Meteo best match", None, 16, True, "best match"),
+}
+DAY_COVERAGE_MIN = 0.8  # share of the flying hours (11-17 h solar) a forecast must cover
+
+
+class ForecastUnavailable(ValueError):
+    """The answer does not cover the flying day (date beyond the model range, or outside its domain)."""
+
+    def __init__(self, covered: int, total: int):
+        super().__init__(
+            f"the forecast covers {covered} of the {total} flying hours of the day "
+            "(date beyond the model range, or place outside its domain)"
+        )
+        self.covered, self.total = covered, total
+
+
 SURFACE_VARS = (
     "temperature_2m",
     "dew_point_2m",
@@ -57,7 +89,7 @@ def build_url(
         "start_date": date.isoformat(),
         "end_date": date.isoformat(),
     }
-    if model:
+    if model and model != BEST_MATCH:
         query["models"] = model
     old = (today or dt.date.today()) - date > dt.timedelta(days=5)
     return f"{ARCHIVE_URL if old else FORECAST_URL}?{urllib.parse.urlencode(query, safe=',')}"
@@ -121,6 +153,9 @@ def weather_from_payload(payload: dict, lon: float, base: Weather | None = None)
     w.station_alt_m = station_alt
     day = (solar >= 11) & (solar <= 17)
     temp, dew = _series(h, "temperature_2m"), _series(h, "dew_point_2m")
+    covered = 0 if temp is None else int(np.sum(~np.isnan(temp[day])))
+    if covered < DAY_COVERAGE_MIN * max(int(day.sum()), 1):
+        raise ForecastUnavailable(covered, int(day.sum()))
     hourly = {}
     sounding = sounding_from_payload(payload)
     if sounding is not None:

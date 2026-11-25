@@ -141,3 +141,29 @@ def test_open_meteo_payload_conversion():
     assert 1000 < w.ceiling(13.5) <= 650 + 1500 and w.ceiling(13.5) > w.ceiling(8.0)
     assert np.hypot(*w.wind_vec(3000.0, 13.0)) * 3.6 == pytest.approx(25.0)
     assert "dew_point_2m" in build_url(44.0, 6.2, __import__("datetime").date(2026, 6, 29))
+
+
+def test_forecast_not_covering_the_day_is_refused():
+    """Regression: a high-resolution model whose range ends in the morning gave a ceiling at the station altitude
+    all afternoon. Such an answer must be refused, not converted."""
+    from cheminee.weather.openmeteo import ForecastUnavailable
+
+    payload = _real_payload()
+    hourly = payload["hourly"]
+    cut = 10  # the model run ends at 10 UTC
+    for key, values in hourly.items():
+        if key != "time":
+            hourly[key] = [v if k < cut else None for k, v in enumerate(values)]
+    with pytest.raises(ForecastUnavailable, match="flying hours"):
+        weather_from_payload(payload, lon=6.24)
+
+
+def test_best_match_sends_no_model():
+    import datetime as dt
+
+    from cheminee.weather.openmeteo import FORECAST_MODELS, build_url
+
+    day, today = dt.date(2026, 11, 27), dt.date(2026, 11, 25)
+    assert "models=" not in build_url(44.0, 6.2, day, "best_match", today=today)
+    assert "models=icon_d2" in build_url(44.0, 6.2, day, "icon_d2", today=today)
+    assert all(len(v) == 5 for v in FORECAST_MODELS.values()) and "meteofrance_seamless" in FORECAST_MODELS
