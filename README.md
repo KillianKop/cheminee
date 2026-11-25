@@ -28,7 +28,7 @@ Python 3.10 or later.
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 tar -xzf data/rasters_COP30_sample.tar.gz -C data/     # sample DEM -> data/output_hh.asc
-pytest                                                 # 65 tests, about 15 s
+pytest                                                 # 66 tests, about 15 s
 cheminee serve data/output_hh.asc --open               # web interface (3D map) on http://127.0.0.1:8765
 cheminee gui data/output_hh.asc                        # 2D interface
 ```
@@ -182,9 +182,13 @@ current result and opens it in the browser.
 ### Training on IGC tracks
 
 ```bash
-cheminee fetch-weather path/to/igc        # one Open-Meteo archive request per flight -> flight.weather.json
-cheminee train $DEM path/to/igc --report docs/img/training_report.png
+cheminee fetch-weather data/igc         # one Open-Meteo archive request per flight -> flight.weather.json
+cheminee train $DEM data/igc --out models/local/thermal_net.pt
+cheminee serve $DEM --model models/local/thermal_net.pt
 ```
+
+Put your tracks in `data/igc/` (sub-folders allowed, see [data/igc/README.md](data/igc/README.md)) and the
+network learnt from them in `models/local/`: both are ignored by git.
 
 Each `flight.igc` can come with a `flight.weather.json` (a serialised `Weather`). Météo-France archives at
 Open-Meteo start in September 2022. Without a weather file, the weather of the flight is estimated from the
@@ -200,7 +204,7 @@ python scripts/synthetic_benchmark.py $DEM models/thermal_net.pt
 ```
 
 IGC files are personal data: only train on tracks whose pilots agreed, and do not commit them (`data/` is
-ignored by git, except the sample DEM).
+ignored by git, except the READMEs and the sample DEM, and `*.igc` is ignored everywhere).
 
 ## Related project: vautour
 
@@ -239,7 +243,7 @@ tests/                   pytest suite on an analytical terrain + a real Open-Met
 scripts/                 synthetic_benchmark.py, plot_speed_to_fly.py
 docs/                    model.md, architecture.md, flight-package.md, figures
 models/                  thermal_net.pt (trained on synthetic tracks)
-data/                    sample DEM; IGC files are not versioned
+data/                    sample DEM; data/igc/ for your IGC tracks (not versioned)
 ```
 
 ## Documentation

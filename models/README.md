@@ -8,3 +8,6 @@ before any practical use. Reproduce it with:
 cheminee synth-igc data/output_hh.asc --out data/igc_synthetic -n 300
 cheminee train data/output_hh.asc data/igc_synthetic --out models/thermal_net.pt
 ```
+
+`local/` (ignored by git) holds the networks trained on your own tracks (`data/igc/`), which must not be
+committed.

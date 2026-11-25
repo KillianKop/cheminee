@@ -8,6 +8,8 @@ The flight package has its own version number (`version` in the JSON, see [docs/
 
 ### Added
 
+- `data/igc/` for your own IGC tracks and `models/local/` for the networks trained on them, both ignored by
+  git (only `data/igc/README.md` is versioned); `*.igc` is now ignored everywhere in the repository.
 - Web interface: replay timeline under the map (play / pause, speed, follow): flown part bright, glider with a
   line to the ground, altitude, height above ground, climb rate and distance flown; lift overlay and ceiling
   follow the replay time. The 3D track carries the hour of every point.
@@ -35,6 +37,9 @@ The flight package has its own version number (`version` in the JSON, see [docs/
 
 ### Fixed
 
+- `train` and `fetch-weather` listed every IGC file twice on case-insensitive file systems (Windows, macOS:
+  `*.igc` and `*.IGC` match the same files), so each flight was trained on twice and could fall in both the
+  training and validation sets. New `igc.find_igc` lists each file once.
 - The final glide added earlier in this release checked the terrain under the glide with the height lost
   from the end instead of from the start: a ridge near the goal could be passed below the clearance. Fixed in
   the shared-out climbs, with a test of the clearance along every glide.

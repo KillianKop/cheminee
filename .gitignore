@@ -13,9 +13,16 @@ dist/
 data/*
 !data/README.md
 !data/rasters_COP30_sample.tar.gz
+# data/igc/: your own IGC tracks for training; only its README is versioned
+!data/igc/
+data/igc/*
+!data/igc/README.md
+# safety net: never version an IGC track, wherever it is
+*.[iI][gG][cC]
 
 # Generated outputs
 models/*.npz
+models/local/
 *.html
 !src/cheminee/web/static/index.html
 flight.json
