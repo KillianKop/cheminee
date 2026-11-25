@@ -76,7 +76,8 @@ function insideDem(lon, lat) {
 function buildForm() {
   const cfg = state.cfg, d = cfg.defaults;
   $("dem-name").textContent = `${cfg.dem.name} · ${cfg.dem.width_km.toFixed(1)} × ${cfg.dem.height_km.toFixed(1)} km`;
-  $("default-day").textContent = d.day_of_year;
+  updateDateHint();
+  $("date").addEventListener("change", updateDateHint);
   for (const name of Object.keys(cfg.presets)) $("preset").append(el("option", { value: name }, name.replaceAll("_", " ")));
   $("preset").value = d.preset;
   for (const id of ["t_start", "t_end", "utc_offset", "n_routes", "objective", "forecast_model"]) $(id).value = d[id];
@@ -105,12 +106,25 @@ function buildForm() {
   $("basemap").addEventListener("change", setBasemap);
   $("exaggeration").addEventListener("change", setRelief);
   $("show-lift").addEventListener("change", showLift);
+  $("show-ceiling").addEventListener("change", showLift);
   $("hour").addEventListener("input", () => {
     state.hourIdx = +$("hour").value;
     if (state.frameQueued) return; // at most one repaint per animation frame while the slider moves
     state.frameQueued = true;
     requestAnimationFrame(() => { state.frameQueued = false; showLift(); });
   });
+}
+
+// Day of year used by the planner, shown under the date.
+function updateDateHint() {
+  const value = $("date").value;
+  if (!value) {
+    $("date-hint").textContent = `Empty date: day ${state.cfg.defaults.day_of_year} of the year (late June).`;
+    return;
+  }
+  const d = new Date(`${value}T12:00:00Z`);
+  const day = Math.round((d - Date.UTC(d.getUTCFullYear(), 0, 0)) / 86400e3);
+  $("date-hint").textContent = `Day ${day} of the year. Use UTC offset 1 in winter, 2 in summer (France).`;
 }
 
 function updatePlaceholders() {
@@ -169,7 +183,7 @@ function initMap() {
         { id: "hillshade", type: "hillshade", source: "dem-shade",
           paint: { "hillshade-exaggeration": 0.35, "hillshade-shadow-color": "#2f2f2f" } },
       ],
-      terrain: { source: "dem-terrain", exaggeration: 1.5 },
+      terrain: { source: "dem-terrain", exaggeration: Number($("exaggeration").value) || 1 },
     },
     bounds: [[b.lon_min, b.lat_min], [b.lon_max, b.lat_max]],
     fitBoundsOptions: { padding: 30 },
@@ -230,7 +244,7 @@ function addOverlays(map) {
   map.addLayer({ id: "turnpoints", type: "circle", source: "turnpoints", filter: ["==", ["geometry-type"], "Point"],
     paint: { "circle-radius": 7, "circle-color": ["get", "color"], "circle-stroke-color": "#fff", "circle-stroke-width": 2 } });
   // 3D track at the flight altitude (WebGL custom layer, track3d.js)
-  state.track = new TrackLayer();
+  state.track = new TrackLayer([b.lon_min, b.lat_min]);
   state.track.setExaggeration(Number($("exaggeration").value) || 1);
   map.addLayer(state.track);
 
@@ -327,10 +341,24 @@ function liftImage(frame) {
   return canvas.toDataURL("image/png");
 }
 
+// Ceiling (m) at a local hour: linear between the planner's hourly slots, constant beyond.
+function ceilingAt(hour) {
+  const { hours, m } = state.result.ceiling;
+  if (hour <= hours[0]) return m[0];
+  for (let i = 1; i < hours.length; i++) {
+    if (hour <= hours[i]) return m[i - 1] + ((hour - hours[i - 1]) / (hours[i] - hours[i - 1])) * (m[i] - m[i - 1]);
+  }
+  return m[m.length - 1];
+}
+
 function showLift() {
   const map = state.map, res = state.result;
   if (!map || !res || !state.overlays) return;
-  $("hour-label").textContent = fmtHour(res.lift.hours[state.hourIdx]);
+  const hour = res.lift.hours[state.hourIdx];
+  $("hour-label").textContent = fmtHour(hour);
+  const ceiling = Math.round(ceilingAt(hour));
+  $("ceiling-label").textContent = `${ceiling} m`;
+  state.track.setCeiling(state.cfg.dem.bounds, $("show-ceiling").checked ? ceiling : null);
   const visible = $("show-lift").checked;
   if (map.getLayer("lift")) map.setLayoutProperty("lift", "visibility", visible ? "visible" : "none");
   if (!visible) return;
@@ -443,11 +471,13 @@ function drawResult() {
 }
 
 // -- route list and altitude profile ------------------------------------------------------- //
-function profileSvg(r, ceiling) {
+function profileSvg(r) {
   const W = 320, H = 120, L = 30, B = 14;
   const path = r.path, t0 = path[0][3], t1 = path[path.length - 1][3];
+  const times = Array.from({ length: 41 }, (_, i) => t0 + ((t1 - t0) * i) / 40);
+  const ceil = times.map((t) => ceilingAt(t));
   const zMin = Math.min(...path.map((p) => p[4])) - 100;
-  const zMax = Math.max(ceiling, ...path.map((p) => p[2])) + 100;
+  const zMax = Math.max(...ceil, ...path.map((p) => p[2])) + 100;
   const x = (t) => L + ((t - t0) / Math.max(t1 - t0, 1e-6)) * (W - L - 4);
   const y = (z) => 4 + (1 - (z - zMin) / (zMax - zMin)) * (H - B - 4);
   const flight = path.map((p) => `${x(p[3]).toFixed(1)},${y(p[2]).toFixed(1)}`).join(" ");
@@ -455,7 +485,8 @@ function profileSvg(r, ceiling) {
   const ticks = [zMin + 100, (zMin + zMax) / 2, zMax - 100].map((z) => Math.round(z / 100) * 100);
   return `<svg class="profile" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="altitude profile">` +
     `<polygon class="ground" points="${ground}"/>` +
-    `<line class="ceiling" x1="${L}" x2="${W - 4}" y1="${y(ceiling)}" y2="${y(ceiling)}"/>` +
+    `<polygon class="ceiling-fill" points="${x(t0)},4 ${times.map((t, i) => `${x(t).toFixed(1)},${y(ceil[i]).toFixed(1)}`).join(" ")} ${x(t1)},4"/>` +
+    `<polyline class="ceiling" points="${times.map((t, i) => `${x(t).toFixed(1)},${y(ceil[i]).toFixed(1)}`).join(" ")}"/>` +
     `<polyline class="flight" stroke="${r.color}" points="${flight}"/>` +
     ticks.map((z) => `<text x="2" y="${y(z) + 3}">${z}</text>`).join("") +
     `<text x="${L}" y="${H - 2}">${fmtHour(t0)}</text><text x="${W - 34}" y="${H - 2}">${fmtHour(t1)}</text></svg>`;
@@ -463,7 +494,6 @@ function profileSvg(r, ceiling) {
 
 function listRoutes() {
   const list = $("routes"), res = state.result;
-  const ceiling = Math.max(...res.ceiling.m);
   list.innerHTML = "";
   res.routes.forEach((r, k) => {
     const segs = r.segments.map((s) => s.type === "climb"
@@ -474,7 +504,7 @@ function listRoutes() {
     item.innerHTML = `<div class="title"><span>${k + 1}. ${r.label}</span><span>${r.distance_km} km · ${r.points} pts</span></div>` +
       `<div class="meta">${fmtHour(r.t_start)}–${fmtHour(r.t_end)} · ${r.duration_h.toFixed(1)} h · ${r.speed_kmh} km/h ·` +
       ` <a href="#" class="details">profile & segments</a></div>` +
-      `<div class="more">${profileSvg(r, ceiling)}<table><thead><tr><th>time</th><th>phase</th><th>altitude</th>` +
+      `<div class="more">${profileSvg(r)}<table><thead><tr><th>time</th><th>phase</th><th>altitude</th>` +
       `<th>rate / airspeed</th></tr></thead><tbody>${segs}</tbody></table></div>`;
     item.classList.toggle("off", !state.shown.has(k));
     item.addEventListener("click", (ev) => {

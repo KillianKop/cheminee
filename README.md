@@ -135,7 +135,9 @@ open the URL printed by the command in a browser, save the answer and pass it wi
    turnpoints and thermal nodes are drawn on the ground.
    Click a route to show or hide it,
    **profile & segments** shows its altitude profile (flight, ground, ceiling) and lists its climbs and glides.
-   The toolbar overlays the lift index of any hour, switches the background map and sets the relief.
+   The toolbar picks the hour and shows its lift index and its ceiling (a translucent plane over the computed
+   area), switches the background map and sets the relief (true scale by default; exaggerating it makes every
+   height look bigger).
 
 The map is [MapLibre GL JS](https://maplibre.org) 4.7.1 (BSD-3, vendored in `src/cheminee/web/static/vendor/`,
 no CDN). The 3D relief comes from elevation tiles the server cuts on the fly from **the same DEM as the

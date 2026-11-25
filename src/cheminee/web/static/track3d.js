@@ -4,6 +4,8 @@
 // - Climbs in thermals (track points at the same position, rising altitude) are drawn as spirals around the
 //   thermal, like a recorded flight, instead of a vertical bar.
 // - A translucent curtain hangs from the glides down to the ground.
+// - The ceiling of the selected hour is a translucent plane over the computed area, framed by a line: a visual
+//   reference to judge the flight altitudes.
 // - Positions use the matrix MapLibre draws the terrain with (`modelViewProjectionMatrix`: world pixels in x/y,
 //   metres in z, terrain elevation included), so the track and the relief line up exactly. Coordinates are
 //   relative to a local origin so that float32 keeps centimetre precision.
@@ -15,6 +17,9 @@ const SPIRAL_RADIUS_M = 45;
 const SPIRAL_GAIN_PER_TURN_M = 70;
 const SPIRAL_POINTS_PER_TURN = 24;
 const CURTAIN_ALPHA = 0.15;
+const CEILING_COLOR = "#2b6fd6";
+const CEILING_ALPHA = 0.1;
+const CEILING_LINE_PX = 2;
 
 const LINE_VS = `
 attribute vec3 a_pos;
@@ -107,140 +112,190 @@ function trackPoints(track) {
 }
 
 class TrackLayer {
-  constructor() {
+  // origin: [lon, lat] near the data (the DEM corner): positions are stored relative to it
+  constructor(origin) {
     this.id = "track3d";
     this.type = "custom";
     this.renderingMode = "3d";
     this.routes = [];
-    this.exaggeration = 1.5;
+    this.ceiling = null; // {bounds, alt}
+    this.exaggeration = 1;
     this.meshes = [];
+    this.ceilingMesh = null;
+    const o = maplibregl.MercatorCoordinate.fromLngLat({ lng: origin[0], lat: origin[1] });
+    this.origin = [o.x, o.y];
   }
 
   onAdd(map, gl) {
     this.map = map;
     this.gl = gl;
     this.line = compile(gl, LINE_VS, LINE_FS);
-    this.curtain = compile(gl, CURTAIN_VS, LINE_FS);
+    this.surface = compile(gl, CURTAIN_VS, LINE_FS);
     this.upload();
+    this.uploadCeiling();
   }
 
   onRemove(map, gl) {
     this.free();
+    this.freeCeiling();
     gl.deleteProgram(this.line);
-    gl.deleteProgram(this.curtain);
+    gl.deleteProgram(this.surface);
   }
 
   // routes: [{color, track}] of the routes to show
   setRoutes(routes) {
     this.routes = routes;
     if (this.gl) this.upload();
-    if (this.map) this.map.triggerRepaint();
+    this.repaint();
+  }
+
+  // bounds: {lon_min, lat_min, lon_max, lat_max}; alt in metres, or null to hide the ceiling
+  setCeiling(bounds, alt) {
+    this.ceiling = alt === null ? null : { bounds, alt };
+    if (this.gl) this.uploadCeiling();
+    this.repaint();
   }
 
   setExaggeration(ex) {
     this.exaggeration = ex;
+    this.repaint();
+  }
+
+  repaint() {
     if (this.map) this.map.triggerRepaint();
   }
 
+  rel(p) {
+    return [p.x - this.origin[0], p.y - this.origin[1], p.z];
+  }
+
+  buffer(target, data) {
+    const gl = this.gl, b = gl.createBuffer();
+    gl.bindBuffer(target, b);
+    gl.bufferData(target, data, gl.STATIC_DRAW);
+    return b;
+  }
+
+  // Screen-space line through points [x, y, z] (relative mercator x/y, metres z): 2 vertices per point.
+  lineMesh(rel) {
+    const n = Math.min(rel.length, 32000); // 16-bit indices
+    const data = new Float32Array(n * 2 * 10);
+    for (let i = 0; i < n; i++) {
+      const prev = rel[Math.max(i - 1, 0)], next = rel[Math.min(i + 1, n - 1)];
+      for (let s = 0; s < 2; s++) data.set([...rel[i], ...prev, ...next, s ? 1 : -1], (i * 2 + s) * 10);
+    }
+    const idx = [];
+    for (let i = 0; i < n - 1; i++) idx.push(2 * i, 2 * i + 1, 2 * i + 2, 2 * i + 1, 2 * i + 3, 2 * i + 2);
+    const gl = this.gl;
+    return { buf: this.buffer(gl.ARRAY_BUFFER, data), idx: this.buffer(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(idx)), count: idx.length };
+  }
+
+  // Triangles over vertices [x, y, z].
+  surfaceMesh(vertices, idx) {
+    const gl = this.gl;
+    return {
+      buf: this.buffer(gl.ARRAY_BUFFER, new Float32Array(vertices.flat())),
+      idx: this.buffer(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(idx)),
+      count: idx.length,
+    };
+  }
+
+  deleteMesh(m) {
+    if (m) for (const b of [m.buf, m.idx]) this.gl.deleteBuffer(b);
+  }
+
   free() {
-    for (const m of this.meshes) for (const b of [m.lineBuf, m.lineIdx, m.curtainBuf, m.curtainIdx]) this.gl.deleteBuffer(b);
+    for (const m of this.meshes) {
+      this.deleteMesh(m.line);
+      this.deleteMesh(m.curtain);
+    }
     this.meshes = [];
   }
 
+  freeCeiling() {
+    if (!this.ceilingMesh) return;
+    this.deleteMesh(this.ceilingMesh.plane);
+    this.deleteMesh(this.ceilingMesh.frame);
+    this.ceilingMesh = null;
+  }
+
   upload() {
-    const gl = this.gl;
     this.free();
-    const all = this.routes.map((r) => ({ color: r.color, pts: trackPoints(r.track) })).filter((r) => r.pts.length > 1);
-    if (!all.length) return;
-    const o = all[0].pts[0];
-    this.origin = [o.x, o.y];
-    for (const { color, pts } of all) {
-      const n = Math.min(pts.length, 32000); // 2 vertices per point, 16-bit indices
-      const rel = pts.slice(0, n).map((p) => [p.x - o.x, p.y - o.y, p.z]);
-      const line = new Float32Array(n * 2 * 10);
-      for (let i = 0; i < n; i++) {
-        const prev = rel[Math.max(i - 1, 0)], next = rel[Math.min(i + 1, n - 1)];
-        for (let s = 0; s < 2; s++) {
-          line.set([...rel[i], ...prev, ...next, s ? 1 : -1], (i * 2 + s) * 10);
-        }
+    for (const r of this.routes) {
+      const pts = trackPoints(r.track).slice(0, 32000);
+      if (pts.length < 2) continue;
+      const rel = pts.map((p) => this.rel(p));
+      const vertices = [], idx = [];
+      pts.forEach((p, i) => vertices.push(rel[i], [rel[i][0], rel[i][1], p.ground]));
+      for (let i = 0; i < pts.length - 1; i++) {
+        if (pts[i].glide && pts[i + 1].glide) idx.push(2 * i, 2 * i + 1, 2 * i + 2, 2 * i + 1, 2 * i + 3, 2 * i + 2);
       }
-      const lineIdx = [];
-      for (let i = 0; i < n - 1; i++) lineIdx.push(2 * i, 2 * i + 1, 2 * i + 2, 2 * i + 1, 2 * i + 3, 2 * i + 2);
-      const curtain = new Float32Array(n * 2 * 3);
-      for (let i = 0; i < n; i++) {
-        curtain.set(rel[i], i * 6);
-        curtain.set([rel[i][0], rel[i][1], pts[i].ground], i * 6 + 3);
-      }
-      const curtainIdx = [];
-      for (let i = 0; i < n - 1; i++) {
-        if (pts[i].glide && pts[i + 1].glide) curtainIdx.push(2 * i, 2 * i + 1, 2 * i + 2, 2 * i + 1, 2 * i + 3, 2 * i + 2);
-      }
-      const buffer = (target, data) => {
-        const b = gl.createBuffer();
-        gl.bindBuffer(target, b);
-        gl.bufferData(target, data, gl.STATIC_DRAW);
-        return b;
-      };
-      this.meshes.push({
-        color,
-        lineBuf: buffer(gl.ARRAY_BUFFER, line),
-        lineIdx: buffer(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(lineIdx)),
-        lineCount: lineIdx.length,
-        curtainBuf: buffer(gl.ARRAY_BUFFER, curtain),
-        curtainIdx: buffer(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(curtainIdx)),
-        curtainCount: curtainIdx.length,
-      });
+      this.meshes.push({ color: r.color, line: this.lineMesh(rel), curtain: this.surfaceMesh(vertices, idx) });
     }
   }
 
+  uploadCeiling() {
+    this.freeCeiling();
+    if (!this.ceiling) return;
+    const { bounds: b, alt } = this.ceiling;
+    const corner = (lon, lat) => {
+      const m = maplibregl.MercatorCoordinate.fromLngLat({ lng: lon, lat });
+      return this.rel({ x: m.x, y: m.y, z: alt });
+    };
+    const c = [corner(b.lon_min, b.lat_min), corner(b.lon_max, b.lat_min), corner(b.lon_max, b.lat_max), corner(b.lon_min, b.lat_max)];
+    this.ceilingMesh = { plane: this.surfaceMesh(c, [0, 1, 2, 0, 2, 3]), frame: this.lineMesh([...c, c[0], c[1]]) };
+  }
+
+  drawSurface(mesh, color) {
+    const gl = this.gl, pos = gl.getAttribLocation(this.surface, "a_pos");
+    if (!mesh || !mesh.count) return;
+    gl.uniform4fv(gl.getUniformLocation(this.surface, "u_color"), color);
+    gl.bindBuffer(gl.ARRAY_BUFFER, mesh.buf);
+    gl.enableVertexAttribArray(pos);
+    gl.vertexAttribPointer(pos, 3, gl.FLOAT, false, 12, 0);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.idx);
+    gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
+    gl.disableVertexAttribArray(pos);
+  }
+
+  drawLine(mesh, width, color) {
+    const gl = this.gl, loc = (name) => gl.getAttribLocation(this.line, name);
+    const attrs = [[loc("a_pos"), 3, 0], [loc("a_prev"), 3, 12], [loc("a_next"), 3, 24], [loc("a_side"), 1, 36]];
+    gl.uniform1f(gl.getUniformLocation(this.line, "u_width"), width * (window.devicePixelRatio || 1));
+    gl.uniform4fv(gl.getUniformLocation(this.line, "u_color"), color);
+    gl.bindBuffer(gl.ARRAY_BUFFER, mesh.buf);
+    for (const [l, size, offset] of attrs) {
+      gl.enableVertexAttribArray(l);
+      gl.vertexAttribPointer(l, size, gl.FLOAT, false, 40, offset);
+    }
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.idx);
+    gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
+    for (const [l] of attrs) gl.disableVertexAttribArray(l);
+  }
+
   render(gl, _matrix, options) {
-    if (!this.meshes.length || !options || !options.modelViewProjectionMatrix) return;
+    if ((!this.meshes.length && !this.ceilingMesh) || !options || !options.modelViewProjectionMatrix) return;
     // world pixels = mercator * worldSize (tile size 512): local origin + scale, then MapLibre's terrain matrix
     const ws = 512 * Math.pow(2, this.map.getZoom());
     const [ox, oy] = this.origin;
     const local = [ws, 0, 0, 0, 0, ws, 0, 0, 0, 0, 1, 0, ox * ws, oy * ws, 0, 1];
     const matrix = new Float32Array(mat4Mul(options.modelViewProjectionMatrix, local));
-    const viewport = [gl.drawingBufferWidth, gl.drawingBufferHeight];
-    const ratio = window.devicePixelRatio || 1;
-    const ex = this.exaggeration;
 
-    // curtains first, translucent, without writing depth so the lines behind stay visible
-    gl.useProgram(this.curtain);
-    gl.uniformMatrix4fv(gl.getUniformLocation(this.curtain, "u_matrix"), false, matrix);
-    gl.uniform1f(gl.getUniformLocation(this.curtain, "u_ex"), ex);
-    const cPos = gl.getAttribLocation(this.curtain, "a_pos");
+    // translucent surfaces first, without writing depth: the lines behind them stay visible
+    gl.useProgram(this.surface);
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.surface, "u_matrix"), false, matrix);
+    gl.uniform1f(gl.getUniformLocation(this.surface, "u_ex"), this.exaggeration);
     gl.depthMask(false);
-    for (const m of this.meshes) {
-      if (!m.curtainCount) continue;
-      gl.uniform4fv(gl.getUniformLocation(this.curtain, "u_color"), hexColor(m.color, CURTAIN_ALPHA));
-      gl.bindBuffer(gl.ARRAY_BUFFER, m.curtainBuf);
-      gl.enableVertexAttribArray(cPos);
-      gl.vertexAttribPointer(cPos, 3, gl.FLOAT, false, 12, 0);
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, m.curtainIdx);
-      gl.drawElements(gl.TRIANGLES, m.curtainCount, gl.UNSIGNED_SHORT, 0);
-    }
-    gl.disableVertexAttribArray(cPos);
+    if (this.ceilingMesh) this.drawSurface(this.ceilingMesh.plane, hexColor(CEILING_COLOR, CEILING_ALPHA));
+    for (const m of this.meshes) this.drawSurface(m.curtain, hexColor(m.color, CURTAIN_ALPHA));
     gl.depthMask(true);
 
     gl.useProgram(this.line);
     gl.uniformMatrix4fv(gl.getUniformLocation(this.line, "u_matrix"), false, matrix);
-    gl.uniform1f(gl.getUniformLocation(this.line, "u_ex"), ex);
-    gl.uniform2fv(gl.getUniformLocation(this.line, "u_viewport"), viewport);
-    const loc = (name) => gl.getAttribLocation(this.line, name);
-    const attrs = [[loc("a_pos"), 3, 0], [loc("a_prev"), 3, 12], [loc("a_next"), 3, 24], [loc("a_side"), 1, 36]];
-    for (const [width, color] of [[TRACK_OUTLINE_PX, null], [TRACK_LINE_PX, "route"]]) {
-      gl.uniform1f(gl.getUniformLocation(this.line, "u_width"), width * ratio);
-      for (const m of this.meshes) {
-        gl.uniform4fv(gl.getUniformLocation(this.line, "u_color"), color ? hexColor(m.color, 1) : [0.07, 0.08, 0.1, 0.5]);
-        gl.bindBuffer(gl.ARRAY_BUFFER, m.lineBuf);
-        for (const [l, size, offset] of attrs) {
-          gl.enableVertexAttribArray(l);
-          gl.vertexAttribPointer(l, size, gl.FLOAT, false, 40, offset);
-        }
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, m.lineIdx);
-        gl.drawElements(gl.TRIANGLES, m.lineCount, gl.UNSIGNED_SHORT, 0);
-      }
-    }
-    for (const [l] of attrs) gl.disableVertexAttribArray(l);
+    gl.uniform1f(gl.getUniformLocation(this.line, "u_ex"), this.exaggeration);
+    gl.uniform2fv(gl.getUniformLocation(this.line, "u_viewport"), [gl.drawingBufferWidth, gl.drawingBufferHeight]);
+    if (this.ceilingMesh) this.drawLine(this.ceilingMesh.frame, CEILING_LINE_PX, hexColor(CEILING_COLOR, 0.8));
+    for (const m of this.meshes) this.drawLine(m.line, TRACK_OUTLINE_PX, [0.07, 0.08, 0.1, 0.5]);
+    for (const m of this.meshes) this.drawLine(m.line, TRACK_LINE_PX, hexColor(m.color, 1));
   }
 }

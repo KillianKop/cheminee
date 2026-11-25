@@ -30,7 +30,7 @@
       <label>Takeoff after (h) <input type="number" id="t_start" step="0.25" min="6" max="20"></label>
       <label>Land before (h) <input type="number" id="t_end" step="0.25" min="7" max="22"></label>
     </div>
-    <p class="hint" id="date-hint">Empty date: day <span id="default-day"></span> of the year.</p>
+    <p class="hint" id="date-hint"></p>
   </section>
 
   <section>
@@ -82,12 +82,16 @@
       <option value="none">none (offline)</option>
     </select></label>
     <label>Relief <select id="exaggeration">
-      <option value="0">flat (2D)</option><option value="1">×1</option>
-      <option value="1.5" selected>×1.5</option><option value="2">×2</option><option value="3">×3</option>
+      <option value="0">flat (2D)</option><option value="1" selected>×1 (true scale)</option>
+      <option value="1.5">×1.5</option><option value="2">×2</option><option value="3">×3</option>
     </select></label>
-    <label id="lift-box" hidden><input type="checkbox" id="show-lift" checked> Lift at
-      <input type="range" id="hour" min="0" max="0" step="1"> <b id="hour-label"></b>
-      <span class="ramp" title="lift index 0 → 0.8"></span></label>
+    <span id="lift-box" class="tool" hidden>
+      <label>Hour <input type="range" id="hour" min="0" max="0" step="1"> <b id="hour-label"></b></label>
+      <label title="lift index 0 → 0.8"><input type="checkbox" id="show-lift" checked> lift
+        <span class="ramp"></span></label>
+      <label title="ceiling of the hour over the computed area"><input type="checkbox" id="show-ceiling" checked>
+        ceiling <b id="ceiling-label"></b></label>
+    </span>
     <span class="hint" id="cursor"></span>
   </div>
 </main>

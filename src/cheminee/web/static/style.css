@@ -81,11 +81,13 @@ td:first-child, th:first-child { text-align: left; }
 #toolbar { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; padding: 8px 14px; border-top: 1px solid var(--line); background: var(--panel); }
 #toolbar label { flex-direction: row; align-items: center; gap: 6px; }
 #hour { width: 160px; }
+.tool { display: inline-flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+svg.profile .ceiling-fill { fill: #2b6fd6; opacity: 0.08; }
 .ramp { display: inline-block; width: 90px; height: 10px; border-radius: 3px;
   background: linear-gradient(90deg, rgba(201,199,154,0.2), #f2c14e, #f07f3c, #c81e1e); }
 svg.profile { display: block; width: 100%; height: 120px; margin-top: 8px; }
 svg.profile .ground { fill: #b9ad97; }
-svg.profile .ceiling { stroke: #667080; stroke-dasharray: 4 3; fill: none; }
+svg.profile .ceiling { stroke: #2b6fd6; stroke-dasharray: 4 3; fill: none; }
 svg.profile .flight { fill: none; stroke-width: 2; }
 svg.profile text { font-size: 9px; fill: #667080; }
 #routes li .more { display: none; }

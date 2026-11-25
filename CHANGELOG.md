@@ -11,6 +11,9 @@ The flight package has its own version number (`version` in the JSON, see [docs/
 - Local web interface (`cheminee serve DEM`): 3D terrain, takeoff picked by click, presets, Open-Meteo forecast
   and hand-set weather values, hourly weather preview, flight computation with live log, routes and lift field
   in 3D. Standard library HTTP server bound to 127.0.0.1, plotly.js served from the plotly package.
+- Web map: ceiling of the selected hour drawn as a translucent plane over the computed area, hourly ceiling in
+  the altitude profile, relief at true scale by default (x1.5 made heights look 1.5 times bigger), day of year
+  and UTC offset hint under the date.
 - Web map: flights drawn in 3D at their altitude by a WebGL custom layer (`static/track3d.js`): smooth line of
   constant screen width, spirals in the thermals, translucent curtain to the ground, aligned with the relief
   through MapLibre's terrain matrix and scaled with the relief exaggeration (flat on the map in 2D mode); the API
