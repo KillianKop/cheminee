@@ -96,20 +96,26 @@ def build_weather(args, lat: float, lon: float) -> Weather:
     for opt, (attr, _) in WEATHER_OPTIONS.items():
         value = getattr(args, opt)
         if value is not None:
-            setattr(weather, attr, value)
-            weather.hourly.pop(attr, None)  # an explicit value replaces the hourly series
-            if attr in ("temp_c", "dewpoint_c", "inversion_alt_m", "station_alt_m"):
-                weather.hourly.pop("ceiling_m", None)
-            if attr.startswith("wind"):
-                weather.wind_profile = {}
+            weather.override(attr, value)  # an explicit value replaces the hourly series
     weather.cast_shadows = weather.cast_shadows or args.shadows
     return weather
+
+
+def lift_factory(model_path: str | None):
+    """Lift model factory `(terrain, params) -> LiftModel`: ThermalNet with a checkpoint, else the heuristic."""
+    if model_path:
+        from .lift.neural import NeuralLift, load_checkpoint
+
+        net, _ = load_checkpoint(model_path)
+        return lambda t, p: NeuralLift(t, p, net)
+    from .lift import HeuristicLift
+
+    return lambda t, p: HeuristicLift(t, p)
 
 
 def _flight_setup(args):
     """Common wiring (composition root): terrain, params, lift factory, takeoff, goal."""
     from .domain import Terrain
-    from .lift import HeuristicLift
 
     terrain = Terrain.from_asc(args.dem)
     day = dt.date.fromisoformat(args.date).timetuple().tm_yday if args.date else args.day
@@ -121,13 +127,7 @@ def _flight_setup(args):
         weather=build_weather(args, terrain.lat_mid, terrain.lon_mid),
         objective=args.objective,
     )
-    if args.model:
-        from .lift.neural import NeuralLift, load_checkpoint
-
-        net, _ = load_checkpoint(args.model)
-        factory = lambda t, p: NeuralLift(t, p, net)  # noqa: E731
-    else:
-        factory = lambda t, p: HeuristicLift(t, p)  # noqa: E731
+    factory = lift_factory(args.model)
     to_xy = lambda lonlat: tuple(float(v) for v in terrain.lonlat_to_xy(*lonlat))  # noqa: E731
     return (
         terrain,

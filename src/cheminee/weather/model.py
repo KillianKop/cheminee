@@ -138,6 +138,17 @@ class Weather:
     def strength(self, solar_hour) -> float:
         return float(self._value("thermal_strength", solar_hour))
 
+    def override(self, name: str, value) -> None:
+        """Set one value explicitly: it replaces the hourly series of that quantity (and the ones derived from it)."""
+        if name not in self.__dataclass_fields__ or name in ("hourly", "wind_profile"):
+            raise ValueError(f"Unknown weather parameter: {name}")
+        setattr(self, name, value)
+        self.hourly.pop(name, None)
+        if name in ("temp_c", "dewpoint_c", "inversion_alt_m", "station_alt_m"):
+            self.hourly.pop("ceiling_m", None)
+        if name.startswith("wind"):
+            self.wind_profile = {}
+
     # -- (de)serialisation ------------------------------------------------------------
     def to_dict(self) -> dict:
         return asdict(self)
