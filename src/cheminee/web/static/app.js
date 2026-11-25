@@ -1,18 +1,35 @@
-// cheminee web interface: 3D terrain (plotly.js), takeoff picking, weather, planning jobs.
+// cheminee web interface: MapLibre map (relief from the planner's DEM), takeoff picking, weather, planning jobs.
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const TERRAIN_SCALE = [[0, "#5b7f4a"], [0.3, "#9fae73"], [0.55, "#cbb98b"], [0.8, "#a68c74"], [1, "#f4f1ec"]];
-const LIFT_SCALE = [[0, "#8d9c8a"], [0.2, "#c9c79a"], [0.45, "#f2c14e"], [0.7, "#f07f3c"], [1, "#c81e1e"]];
+const LIFT_STOPS = [[0, [141, 156, 138]], [0.2, [201, 199, 154]], [0.45, [242, 193, 78]], [0.7, [240, 127, 60]], [1, [200, 30, 30]]];
+const LIFT_MAX = 0.8; // lift index shown with the last colour
+const BASEMAPS = {
+  topo: {
+    tiles: ["a", "b", "c"].map((s) => `https://${s}.tile.opentopomap.org/{z}/{x}/{y}.png`),
+    maxzoom: 17,
+    attribution: 'Map data © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, SRTM · ' +
+      'style © <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)',
+  },
+  osm: {
+    tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+    maxzoom: 19,
+    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  },
+};
 
 const state = {
   cfg: null,
-  takeoff: null, // {x_km, y_km, z}
+  map: null,
+  takeoff: null, // {lon, lat, z}
+  takeoffMarker: null,
   result: null,
   hourIdx: 0,
   shown: new Set(),
   run: 0, // id of the latest planning request
   frameQueued: false,
+  liftLut: null,
+  overlays: false, // map layers of the computed area, routes and thermals added
 };
 
 // -- helpers ---------------------------------------------------------------------------- //
@@ -33,11 +50,6 @@ function fmtHour(h) {
   return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 }
 
-function lonLat(xKm, yKm) {
-  const d = state.cfg.dem, b = d.bounds;
-  return [b.lon_min + (xKm / d.width_km) * (b.lon_max - b.lon_min), b.lat_min + (yKm / d.height_km) * (b.lat_max - b.lat_min)];
-}
-
 function setStatus(text, error = false) {
   const el = $("status");
   el.hidden = !text;
@@ -49,11 +61,15 @@ function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (k === "style") Object.assign(node.style, v);
-    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
     else node.setAttribute(k, v);
   }
   for (const c of children) node.append(c);
   return node;
+}
+
+function insideDem(lon, lat) {
+  const b = state.cfg.dem.bounds;
+  return lon >= b.lon_min && lon <= b.lon_max && lat >= b.lat_min && lat <= b.lat_max;
 }
 
 // -- form -------------------------------------------------------------------------------- //
@@ -76,8 +92,7 @@ function buildForm() {
   $("preset").addEventListener("change", updatePlaceholders);
   $("forecast").addEventListener("change", () => {
     if ($("forecast").checked && !$("date").value) {
-      const tomorrow = new Date(Date.now() + 86400e3);
-      $("date").value = tomorrow.toISOString().slice(0, 10);
+      $("date").value = new Date(Date.now() + 86400e3).toISOString().slice(0, 10);
     }
     updatePlaceholders();
   });
@@ -87,13 +102,14 @@ function buildForm() {
   $("btn-weather").addEventListener("click", previewWeather);
   $("btn-plan").addEventListener("click", plan);
   $("btn-clear-takeoff").addEventListener("click", () => setTakeoff(null));
-  $("colour").addEventListener("change", draw);
-  $("exaggeration").addEventListener("change", draw);
+  $("basemap").addEventListener("change", setBasemap);
+  $("exaggeration").addEventListener("change", setRelief);
+  $("show-lift").addEventListener("change", showLift);
   $("hour").addEventListener("input", () => {
     state.hourIdx = +$("hour").value;
     if (state.frameQueued) return; // at most one repaint per animation frame while the slider moves
     state.frameQueued = true;
-    requestAnimationFrame(() => { state.frameQueued = false; recolour(); });
+    requestAnimationFrame(() => { state.frameQueued = false; showLift(); });
   });
 }
 
@@ -121,27 +137,209 @@ function request() {
     weather: {},
   };
   if ($("date").value) req.date = $("date").value;
-  if (state.takeoff) req.takeoff = { x_km: state.takeoff.x_km, y_km: state.takeoff.y_km };
+  if (state.takeoff) req.takeoff = { lon: state.takeoff.lon, lat: state.takeoff.lat };
   document.querySelectorAll("#weather-fields input").forEach((input) => {
     if (input.value !== "") req.weather[input.dataset.field] = Number(input.value);
   });
   return req;
 }
 
-// -- takeoff ------------------------------------------------------------------------------ //
+// -- map ------------------------------------------------------------------------------------ //
+function initMap() {
+  const cfg = state.cfg, b = cfg.dem.bounds;
+  const dem = {
+    type: "raster-dem",
+    tiles: [location.origin + cfg.dem.tiles.url],
+    tileSize: 256,
+    encoding: cfg.dem.tiles.encoding,
+    maxzoom: cfg.dem.tiles.max_zoom,
+    attribution: cfg.dem.attribution,
+  };
+  const { attribution, ...shade } = dem; // the notice is shown once, by the terrain source
+  const raster = (name) => ({ type: "raster", tileSize: 256, ...BASEMAPS[name] });
+  const map = new maplibregl.Map({
+    container: "map",
+    style: {
+      version: 8,
+      sources: { topo: raster("topo"), osm: raster("osm"), "dem-terrain": { ...dem, attribution }, "dem-shade": shade },
+      layers: [
+        { id: "background", type: "background", paint: { "background-color": "#e9e6df" } },
+        { id: "topo", type: "raster", source: "topo" },
+        { id: "osm", type: "raster", source: "osm", layout: { visibility: "none" } },
+        { id: "hillshade", type: "hillshade", source: "dem-shade",
+          paint: { "hillshade-exaggeration": 0.35, "hillshade-shadow-color": "#2f2f2f" } },
+      ],
+      terrain: { source: "dem-terrain", exaggeration: 1.5 },
+    },
+    bounds: [[b.lon_min, b.lat_min], [b.lon_max, b.lat_max]],
+    fitBoundsOptions: { padding: 30 },
+    pitch: 55,
+    bearing: -15,
+    maxPitch: 80,
+    attributionControl: { compact: true },
+  });
+  map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
+  map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-right");
+  // "style.load", not "load": "load" waits for every visible tile, the far background included
+  map.once("style.load", () => {
+    addOverlays(map);
+    state.overlays = true;
+    if (state.result) drawResult();
+  });
+  map.on("click", onMapClick);
+  map.on("mousemove", (ev) => {
+    const { lng, lat } = ev.lngLat;
+    $("cursor").textContent = `${lat.toFixed(4)}° N ${lng.toFixed(4)}° E` + (insideDem(lng, lat) ? "" : " · outside the computed area");
+  });
+  state.map = map;
+}
+
+function addOverlays(map) {
+  const b = state.cfg.dem.bounds;
+  const box = [[b.lon_min, b.lat_min], [b.lon_max, b.lat_min], [b.lon_max, b.lat_max], [b.lon_min, b.lat_max], [b.lon_min, b.lat_min]];
+  // Darken what lies outside the DEM with four bands around it (a world-sized polygon with a hole does not
+  // render reliably on terrain).
+  const M = 3; // degrees around the DEM
+  const rect = (w, s, e, n) => ({ type: "Feature", properties: { kind: "mask" },
+    geometry: { type: "Polygon", coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]] } });
+  map.addSource("dem-area", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.getSource("dem-area").setData({ type: "FeatureCollection", features: [
+      rect(b.lon_min - M, b.lat_max, b.lon_max + M, b.lat_max + M),
+      rect(b.lon_min - M, b.lat_min - M, b.lon_max + M, b.lat_min),
+      rect(b.lon_min - M, b.lat_min, b.lon_min, b.lat_max),
+      rect(b.lon_max, b.lat_min, b.lon_max + M, b.lat_max),
+      { type: "Feature", properties: { kind: "outline" }, geometry: { type: "LineString", coordinates: box } },
+  ] });
+  map.addLayer({ id: "dem-mask", type: "fill", source: "dem-area", filter: ["==", ["get", "kind"], "mask"],
+    paint: { "fill-color": "#1d232a", "fill-opacity": 0.35, "fill-antialias": false } });
+  map.addLayer({ id: "dem-outline", type: "line", source: "dem-area", filter: ["==", ["get", "kind"], "outline"],
+    paint: { "line-color": "#1d232a", "line-width": 1.5, "line-dasharray": [3, 2] } });
+
+  const empty = { type: "FeatureCollection", features: [] };
+  for (const id of ["routes", "turnpoints", "nodes"]) map.addSource(id, { type: "geojson", data: empty });
+  map.addLayer({ id: "route-casing", type: "line", source: "routes",
+    layout: { "line-join": "round", "line-cap": "round" }, paint: { "line-color": "#ffffff", "line-width": 7, "line-opacity": 0.85 } });
+  map.addLayer({ id: "route-line", type: "line", source: "routes",
+    layout: { "line-join": "round", "line-cap": "round" }, paint: { "line-color": ["get", "color"], "line-width": 4 } });
+  map.addLayer({ id: "route-legs", type: "line", source: "turnpoints", filter: ["==", ["geometry-type"], "LineString"],
+    paint: { "line-color": ["get", "color"], "line-width": 2, "line-dasharray": [2, 2] } });
+  map.addLayer({ id: "nodes", type: "circle", source: "nodes", paint: {
+    "circle-radius": 4,
+    "circle-color": ["interpolate", ["linear"], ["get", "climb"], 0, "#8d9c8a", 1.5, "#f2c14e", 3, "#c81e1e"],
+    "circle-stroke-color": "#111", "circle-stroke-width": 1 } });
+  map.addLayer({ id: "turnpoints", type: "circle", source: "turnpoints", filter: ["==", ["geometry-type"], "Point"],
+    paint: { "circle-radius": 7, "circle-color": ["get", "color"], "circle-stroke-color": "#fff", "circle-stroke-width": 2 } });
+
+  const popup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 8 });
+  map.on("mouseenter", "nodes", (ev) => {
+    const f = ev.features[0];
+    map.getCanvas().style.cursor = "pointer";
+    popup.setLngLat(f.geometry.coordinates)
+      .setHTML(`thermal · ground ${f.properties.z} m · best climb ${f.properties.climb.toFixed(1)} m/s`).addTo(map);
+  });
+  map.on("mouseleave", "nodes", () => { map.getCanvas().style.cursor = ""; popup.remove(); });
+}
+
+function setBasemap() {
+  const map = state.map, choice = $("basemap").value;
+  for (const id of Object.keys(BASEMAPS)) map.setLayoutProperty(id, "visibility", id === choice ? "visible" : "none");
+}
+
+function setRelief() {
+  const map = state.map, ex = Number($("exaggeration").value);
+  if (ex === 0) {
+    map.setTerrain(null);
+    map.easeTo({ pitch: 0, bearing: 0 });
+  } else {
+    map.setTerrain({ source: "dem-terrain", exaggeration: ex });
+    if (map.getPitch() < 20) map.easeTo({ pitch: 55 });
+  }
+}
+
+async function onMapClick(ev) {
+  const { lng, lat } = ev.lngLat;
+  if (!insideDem(lng, lat)) {
+    setStatus("The takeoff must be inside the computed area (dashed outline).", true);
+    return;
+  }
+  setStatus("");
+  try {
+    const point = await api(`/api/elevation?lon=${lng.toFixed(6)}&lat=${lat.toFixed(6)}`);
+    setTakeoff({ lon: lng, lat, z: point.z });
+  } catch (err) {
+    setStatus(err.message, true);
+  }
+}
+
 function setTakeoff(point) {
   state.takeoff = point;
   const info = $("takeoff-info");
+  if (state.takeoffMarker) state.takeoffMarker.remove();
+  state.takeoffMarker = null;
   if (point) {
-    const [lon, lat] = lonLat(point.x_km, point.y_km);
-    info.innerHTML = `<b>${Math.round(point.z)} m</b> · ${lat.toFixed(4)}° N, ${lon.toFixed(4)}° E<br>` +
-      `<span class="hint">x ${point.x_km.toFixed(2)} km, y ${point.y_km.toFixed(2)} km. Click elsewhere to move it.</span>`;
+    info.innerHTML = `<b>${point.z} m</b> · ${point.lat.toFixed(4)}° N, ${point.lon.toFixed(4)}° E<br>` +
+      '<span class="hint">Click elsewhere to move it.</span>';
+    state.takeoffMarker = new maplibregl.Marker({ element: el("div", { class: "marker-takeoff", title: "takeoff" }) })
+      .setLngLat([point.lon, point.lat]).addTo(state.map);
   } else {
-    info.textContent = "Click on the terrain to place the takeoff. Without one, the planner picks a high spot with good lift.";
+    info.textContent = "Click on the map, inside the computed area, to place the takeoff. Without one, the planner " +
+      "picks a high spot with good lift.";
   }
   info.classList.toggle("hint", !point);
   $("btn-clear-takeoff").hidden = !point;
-  draw();
+}
+
+// -- lift overlay -------------------------------------------------------------------------- //
+function liftLut() {
+  if (state.liftLut) return state.liftLut;
+  const lut = new Uint8ClampedArray(101 * 4);
+  for (let i = 0; i <= 100; i++) {
+    const v = Math.min(i / 100 / LIFT_MAX, 1);
+    let k = 0;
+    while (k < LIFT_STOPS.length - 2 && v > LIFT_STOPS[k + 1][0]) k++;
+    const [v0, c0] = LIFT_STOPS[k], [v1, c1] = LIFT_STOPS[k + 1];
+    const f = Math.min(Math.max((v - v0) / (v1 - v0), 0), 1);
+    for (let c = 0; c < 3; c++) lut[i * 4 + c] = c0[c] + f * (c1[c] - c0[c]);
+    lut[i * 4 + 3] = 255 * Math.min(Math.max((i / 100 - 0.08) / 0.35, 0), 0.8); // weak lift stays transparent
+  }
+  return (state.liftLut = lut);
+}
+
+function liftImage(frame) {
+  const g = state.cfg.lift_grid, lut = liftLut();
+  const canvas = el("canvas", { width: g.nx, height: g.ny });
+  const ctx = canvas.getContext("2d");
+  const img = ctx.createImageData(g.nx, g.ny);
+  let p = 0;
+  for (let r = 0; r < g.ny; r++) {
+    const row = frame[r];
+    for (let c = 0; c < g.nx; c++, p += 4) {
+      const i = Math.min(Math.max(row[c], 0), 100) * 4;
+      img.data[p] = lut[i]; img.data[p + 1] = lut[i + 1]; img.data[p + 2] = lut[i + 2]; img.data[p + 3] = lut[i + 3];
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvas.toDataURL("image/png");
+}
+
+function showLift() {
+  const map = state.map, res = state.result;
+  if (!map || !res || !state.overlays) return;
+  $("hour-label").textContent = fmtHour(res.lift.hours[state.hourIdx]);
+  const visible = $("show-lift").checked;
+  if (map.getLayer("lift")) map.setLayoutProperty("lift", "visibility", visible ? "visible" : "none");
+  if (!visible) return;
+  const url = liftImage(res.lift.frames[state.hourIdx]);
+  const [w, n, e, s] = state.cfg.lift_grid.bounds;
+  const coordinates = [[w, n], [e, n], [e, s], [w, s]];
+  const source = map.getSource("lift");
+  if (source) {
+    source.updateImage({ url, coordinates });
+  } else {
+    map.addSource("lift", { type: "image", url, coordinates });
+    map.addLayer({ id: "lift", type: "raster", source: "lift",
+      paint: { "raster-fade-duration": 0, "raster-resampling": "linear" } }, "dem-mask");
+  }
 }
 
 // -- weather preview --------------------------------------------------------------------- //
@@ -165,7 +363,7 @@ async function previewWeather() {
 
 // -- planning ------------------------------------------------------------------------------ //
 async function plan() {
-  const run = (state.run = (state.run || 0) + 1); // a newer click abandons the older job's follow-up
+  const run = (state.run += 1); // a newer click abandons the older job's follow-up
   $("btn-plan").disabled = true;
   $("log").hidden = false;
   $("log").textContent = "";
@@ -200,8 +398,6 @@ async function follow(id, run, t0) {
 }
 
 function showResult(result, elapsed, total) {
-  const scale = result.lift.scale;
-  result.lift.frames = result.lift.frames.map((f) => f.map((row) => row.map((v) => v * scale)));
   state.result = result;
   state.shown = new Set(result.routes.length ? [0] : []);
   const hours = result.lift.hours;
@@ -210,26 +406,60 @@ function showResult(result, elapsed, total) {
   state.hourIdx = best;
   $("hour").max = hours.length - 1;
   $("hour").value = best;
-  $("hour-box").hidden = false;
-  $("colour").value = "lift";
-  if (!state.takeoff) {
-    const t = result.takeoff;
-    state.takeoff = { x_km: t.x_km, y_km: t.y_km, z: t.z };
-    setTakeoff(state.takeoff);
-  }
+  $("lift-box").hidden = false;
+  if (!state.takeoff) setTakeoff({ lon: result.takeoff.lon, lat: result.takeoff.lat, z: result.takeoff.z });
   const timing = `${elapsed} s server, ${total.toFixed(1)} s in all`;
   setStatus(result.routes.length
     ? `${result.routes.length} routes (${timing}) · ${result.lift_name} lift. Click a route to show it.`
     : `No flight found with this weather (${timing}). Try a later takeoff, another takeoff or the free distance.`,
     !result.routes.length);
   listRoutes();
-  draw();
+  drawResult();
+}
+
+function drawResult() {
+  const map = state.map, res = state.result;
+  if (!map || !res || !state.overlays) return;
+  const shown = res.routes.map((r, k) => [r, k]).filter(([, k]) => state.shown.has(k));
+  map.getSource("routes").setData({ type: "FeatureCollection", features: shown.map(([r, k]) => ({
+    type: "Feature", properties: { color: r.color, route: k },
+    geometry: { type: "LineString", coordinates: r.path.map((p) => [p[0], p[1]]) },
+  })) });
+  map.getSource("turnpoints").setData({ type: "FeatureCollection", features: shown.flatMap(([r]) => [
+    { type: "Feature", properties: { color: r.color }, geometry: { type: "LineString", coordinates: r.turnpoints_lonlat } },
+    ...r.turnpoints_lonlat.map((c) => ({ type: "Feature", properties: { color: r.color }, geometry: { type: "Point", coordinates: c } })),
+  ]) });
+  map.getSource("nodes").setData({ type: "FeatureCollection", features: res.nodes.lonlat.map((c, i) => ({
+    type: "Feature", properties: { z: res.nodes.z[i], climb: res.nodes.climb_ms[i] },
+    geometry: { type: "Point", coordinates: c },
+  })) });
+  showLift();
+}
+
+// -- route list and altitude profile ------------------------------------------------------- //
+function profileSvg(r, ceiling) {
+  const W = 320, H = 120, L = 30, B = 14;
+  const path = r.path, t0 = path[0][3], t1 = path[path.length - 1][3];
+  const zMin = Math.min(...path.map((p) => p[4])) - 100;
+  const zMax = Math.max(ceiling, ...path.map((p) => p[2])) + 100;
+  const x = (t) => L + ((t - t0) / Math.max(t1 - t0, 1e-6)) * (W - L - 4);
+  const y = (z) => 4 + (1 - (z - zMin) / (zMax - zMin)) * (H - B - 4);
+  const flight = path.map((p) => `${x(p[3]).toFixed(1)},${y(p[2]).toFixed(1)}`).join(" ");
+  const ground = `${x(t0)},${y(zMin)} ` + path.map((p) => `${x(p[3]).toFixed(1)},${y(p[4]).toFixed(1)}`).join(" ") + ` ${x(t1)},${y(zMin)}`;
+  const ticks = [zMin + 100, (zMin + zMax) / 2, zMax - 100].map((z) => Math.round(z / 100) * 100);
+  return `<svg class="profile" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="altitude profile">` +
+    `<polygon class="ground" points="${ground}"/>` +
+    `<line class="ceiling" x1="${L}" x2="${W - 4}" y1="${y(ceiling)}" y2="${y(ceiling)}"/>` +
+    `<polyline class="flight" stroke="${r.color}" points="${flight}"/>` +
+    ticks.map((z) => `<text x="2" y="${y(z) + 3}">${z}</text>`).join("") +
+    `<text x="${L}" y="${H - 2}">${fmtHour(t0)}</text><text x="${W - 34}" y="${H - 2}">${fmtHour(t1)}</text></svg>`;
 }
 
 function listRoutes() {
-  const list = $("routes");
+  const list = $("routes"), res = state.result;
+  const ceiling = Math.max(...res.ceiling.m);
   list.innerHTML = "";
-  state.result.routes.forEach((r, k) => {
+  res.routes.forEach((r, k) => {
     const segs = r.segments.map((s) => s.type === "climb"
       ? `<tr><td>${fmtHour(s.t0)}</td><td>climb</td><td>${s.a0} → ${s.a1} m</td><td>${s.rate.toFixed(1)} m/s</td></tr>`
       : `<tr><td>${fmtHour(s.t0)}</td><td>glide ${(s.dist / 1000).toFixed(1)} km</td><td>${s.a0} → ${s.a1} m</td>` +
@@ -237,8 +467,9 @@ function listRoutes() {
     const item = el("li", { style: { "--c": r.color } });
     item.innerHTML = `<div class="title"><span>${k + 1}. ${r.label}</span><span>${r.distance_km} km · ${r.points} pts</span></div>` +
       `<div class="meta">${fmtHour(r.t_start)}–${fmtHour(r.t_end)} · ${r.duration_h.toFixed(1)} h · ${r.speed_kmh} km/h ·` +
-      ` <a href="#" class="details">segments</a></div>` +
-      `<table><thead><tr><th>time</th><th>phase</th><th>altitude</th><th>rate / airspeed</th></tr></thead><tbody>${segs}</tbody></table>`;
+      ` <a href="#" class="details">profile & segments</a></div>` +
+      `<div class="more">${profileSvg(r, ceiling)}<table><thead><tr><th>time</th><th>phase</th><th>altitude</th>` +
+      `<th>rate / airspeed</th></tr></thead><tbody>${segs}</tbody></table></div>`;
     item.classList.toggle("off", !state.shown.has(k));
     item.addEventListener("click", (ev) => {
       if (ev.target.classList.contains("details")) {
@@ -246,115 +477,12 @@ function listRoutes() {
         item.classList.toggle("open");
         return;
       }
+      if (ev.target.closest(".more")) return;
       if (state.shown.has(k)) state.shown.delete(k); else state.shown.add(k);
       item.classList.toggle("off", !state.shown.has(k));
-      draw();
+      drawResult();
     });
     list.append(item);
-  });
-}
-
-// -- 3D scene ------------------------------------------------------------------------------- //
-function draw() {
-  const cfg = state.cfg, g = cfg.grid, res = state.result;
-  const liftMode = $("colour").value === "lift" && res;
-  const frame = liftMode ? res.lift.frames[state.hourIdx] : null;
-  $("hour-label").textContent = res ? fmtHour(res.lift.hours[state.hourIdx]) : "";
-
-  const traces = [{
-    type: "surface",
-    x: g.x_km,
-    y: g.y_km,
-    z: g.z,
-    surfacecolor: frame || g.z,
-    colorscale: frame ? LIFT_SCALE : TERRAIN_SCALE,
-    cmin: frame ? 0 : cfg.dem.z_min,
-    cmax: frame ? 0.8 : cfg.dem.z_max,
-    colorbar: { title: { text: frame ? "lift" : "m" }, len: 0.4, x: 0.0, thickness: 12 },
-    lighting: { ambient: 0.55, diffuse: 0.9, specular: 0.05, roughness: 0.9 },
-    lightposition: { x: -2000, y: 2000, z: 6000 },
-    hovertemplate: frame
-      ? "%{z:.0f} m · lift %{surfacecolor:.2f}<extra>click: takeoff here</extra>"
-      : "%{z:.0f} m<extra>click: takeoff here</extra>",
-  }];
-
-  let zTop = cfg.dem.z_max + 100;
-  if (res) {
-    const ceiling = Math.max(...res.ceiling.m);
-    zTop = Math.max(zTop, ceiling + 100);
-    traces.push({
-      type: "scatter3d", mode: "markers", x: res.nodes.x_km, y: res.nodes.y_km, z: res.nodes.z.map((z) => z + 30),
-      marker: { size: 2.5, color: "#111" }, hoverinfo: "skip",
-    });
-    res.routes.forEach((r, k) => {
-      if (!state.shown.has(k)) return;
-      traces.push({
-        type: "scatter3d", mode: "lines",
-        x: r.profile.map((p) => p[0]), y: r.profile.map((p) => p[1]), z: r.profile.map((p) => p[2]),
-        text: r.profile.map((p) => fmtHour(p[3])),
-        line: { color: r.color, width: 6 },
-        hovertemplate: `%{text} · %{z:.0f} m<extra>route ${k + 1}</extra>`,
-      });
-      traces.push({
-        type: "scatter3d", mode: "lines+markers",
-        x: r.turnpoints_km.map((p) => p[0]), y: r.turnpoints_km.map((p) => p[1]),
-        z: r.turnpoints_km.map(() => ceiling),
-        line: { color: r.color, width: 2, dash: "dash" },
-        marker: { size: 4, color: r.color, symbol: "diamond" },
-        hoverinfo: "skip",
-      });
-    });
-  }
-  if (state.takeoff) {
-    traces.push({
-      type: "scatter3d", mode: "markers+text", x: [state.takeoff.x_km], y: [state.takeoff.y_km], z: [state.takeoff.z + 40],
-      text: ["takeoff"], textposition: "top center",
-      marker: { size: 7, color: "#ffd400", line: { color: "#111", width: 2 } }, hoverinfo: "skip",
-    });
-  }
-
-  const exaggeration = Number($("exaggeration").value);
-  const zMin = cfg.dem.z_min - 50;
-  const layout = {
-    uirevision: "keep",
-    showlegend: false,
-    margin: { l: 0, r: 0, t: 0, b: 0 },
-    paper_bgcolor: getComputedStyle(document.body).backgroundColor,
-    scene: {
-      xaxis: { title: { text: "x east (km)" } },
-      yaxis: { title: { text: "y north (km)" } },
-      zaxis: { title: { text: "alt (m)" }, range: [zMin, zTop], nticks: 4 },
-      aspectmode: "manual",
-      aspectratio: {
-        x: 1,
-        y: cfg.dem.height_km / cfg.dem.width_km,
-        z: (exaggeration * (zTop - zMin)) / (cfg.dem.width_km * 1000),
-      },
-      camera: { eye: { x: -0.7, y: -1.0, z: 0.75 } },
-    },
-  };
-  Plotly.react("plot", traces, layout, { responsive: true, displaylogo: false });
-}
-
-// Hour slider: only the colours of the surface change, the rest of the scene is left alone.
-function recolour() {
-  const res = state.result;
-  $("hour-label").textContent = res ? fmtHour(res.lift.hours[state.hourIdx]) : "";
-  if (!res || $("colour").value !== "lift") return;
-  Plotly.restyle("plot", { surfacecolor: [res.lift.frames[state.hourIdx]] }, [0]);
-}
-
-function bindClicks() {
-  const plot = $("plot");
-  plot.on("plotly_click", (ev) => {
-    const p = ev.points.find((q) => q.curveNumber === 0);
-    if (p) setTakeoff({ x_km: p.x, y_km: p.y, z: p.z });
-  });
-  plot.on("plotly_hover", (ev) => {
-    const p = ev.points.find((q) => q.curveNumber === 0);
-    if (!p) return;
-    const [lon, lat] = lonLat(p.x, p.y);
-    $("cursor").textContent = `${lat.toFixed(4)}° N ${lon.toFixed(4)}° E · ${Math.round(p.z)} m`;
   });
 }
 
@@ -367,6 +495,5 @@ function bindClicks() {
     return;
   }
   buildForm();
-  draw();
-  bindClicks();
+  initMap();
 })();

@@ -1,14 +1,18 @@
 """Local web interface: a small JSON API over the planner and the page that drives it (`cheminee serve`).
 
-Standard library only (`http.server`). The page draws the 3D terrain with the plotly.js bundled in the plotly
-Python package, served from disk without importing plotly, so the app works offline except for the optional
-Open-Meteo forecast. The server binds to 127.0.0.1: it is a local tool without authentication.
+Standard library only (`http.server`). The page is a MapLibre GL map (vendored in `static/vendor/`, BSD-3):
+the 3D relief comes from elevation tiles cut on the fly from the same DEM as the planner (`tiles.py`), the
+background map from OpenTopoMap or OpenStreetMap tiles loaded by the browser. Without network the page still
+works, with the relief and a hillshade only (and no Open-Meteo forecast). The server binds to 127.0.0.1: it is
+a local tool without authentication.
 
-API (JSON):
-    GET  /api/config        DEM grid for the 3D view, presets, weather fields, defaults
-    POST /api/weather       resolved weather of a request, hour by hour
-    POST /api/plan          start a planning job -> {"job": id}
-    GET  /api/jobs/<id>     job status, log lines and, when done, routes, thermal nodes and lift frames
+API:
+    GET  /api/config                DEM bounds and tiles, presets, weather fields, defaults (JSON)
+    GET  /api/elevation?lon=&lat=   DEM altitude of a point (JSON)
+    GET  /tiles/dem/<z>/<x>/<y>.png elevation tile of the DEM (Terrain-RGB)
+    POST /api/weather               resolved weather of a request, hour by hour (JSON)
+    POST /api/plan                  start a planning job -> {"job": id}
+    GET  /api/jobs/<id>             job status, log lines and, when done, routes, thermal nodes, lift frames
 """
 
 from __future__ import annotations
@@ -16,7 +20,6 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import gzip
-import importlib.util
 import io
 import json
 import math
@@ -41,7 +44,8 @@ from ..domain import Terrain
 from ..weather import PRESETS, Weather
 
 STATIC_DIR = Path(__file__).with_name("static")
-MAX_GRID = 300  # cells along the longest side of the 3D grid sent to the page
+MAX_GRID = 300  # cells along the longest side of the lift images sent to the page
+MAX_TILE_CACHE = 1024  # encoded DEM tiles kept in memory (~20 kB each)
 MAX_JOBS = 20  # finished jobs kept in memory
 MAX_LIFT_CACHE = 3  # lift models (with their hourly fields, ~30 MB each on the sample DEM) kept in memory
 MAX_RESULT_CACHE = 12  # planning results kept for identical requests
@@ -68,16 +72,6 @@ WEATHER_FIELDS = {
 
 class RequestError(ValueError):
     """Invalid request: answered with HTTP 400 and the message."""
-
-
-def _plotly_js() -> Path | None:
-    """plotly.min.js shipped with the plotly Python package (located without importing plotly)."""
-    spec = importlib.util.find_spec("plotly")
-    for root in (spec.submodule_search_locations or []) if spec else []:
-        path = Path(root) / "package_data" / "plotly.min.js"
-        if path.exists():
-            return path
-    return None
 
 
 def _number(req: dict, key: str, lo: float, hi: float, default=None) -> float | None:
@@ -195,6 +189,8 @@ class WebApp:
         self._lifts: OrderedDict[str, _CachedLift] = OrderedDict()  # LRU, key = everything the fields depend on
         self._results: OrderedDict[str, dict] = OrderedDict()  # LRU, key = the whole planning request
         self._config_bytes: tuple[str, bytes, bytes] | None = None
+        self._tiles: OrderedDict[tuple[int, int, int], tuple[str, bytes]] = OrderedDict()  # LRU of DEM tiles
+        self._tiles_lock = threading.Lock()  # tiles are requested by many browser connections at once
 
     def _notify(self) -> None:
         with self._news:
@@ -202,12 +198,16 @@ class WebApp:
 
     # -- configuration ------------------------------------------------------------------ #
     def config(self) -> dict:
+        from ..export.flight_package import COPERNICUS_DEM_NOTICE
+        from .tiles import DEM_MAX_ZOOM
+
         t, s, p = self.t, self.stride, self.base_params
-        rows, cols = np.arange(t.ny)[::s], np.arange(t.nx)[::s]
-        xs, _ = t.rowcol_to_xy(0, cols)
-        _, ys = t.rowcol_to_xy(rows, 0)
         lon_min, lat_min = t.xy_to_lonlat(0.0, 0.0)
         lon_max, lat_max = t.xy_to_lonlat(t.width, t.height)
+        ny, nx = t.z[::s, ::s].shape
+        # Lift frames are the planner fields decimated by `stride`: pixel k is centred on DEM cell k * stride.
+        cell = t.cell_deg
+        west, north = lon_min + 0.5 * cell - 0.5 * s * cell, lat_max - 0.5 * cell + 0.5 * s * cell
         return dict(
             dem=dict(
                 name=self.dem_name,
@@ -218,12 +218,16 @@ class WebApp:
                 z_min=round(float(t.z.min())),
                 z_max=round(float(t.z.max())),
                 bounds=dict(lon_min=lon_min, lat_min=lat_min, lon_max=lon_max, lat_max=lat_max),
+                center=dict(lon=float(t.lon_mid), lat=float(t.lat_mid)),
+                tiles=dict(url="/tiles/dem/{z}/{x}/{y}.png", encoding="mapbox", max_zoom=DEM_MAX_ZOOM),
+                attribution=COPERNICUS_DEM_NOTICE,
             ),
-            grid=dict(
+            lift_grid=dict(
                 stride=s,
-                x_km=np.round(xs / 1000, 3),
-                y_km=np.round(ys / 1000, 3),
-                z=np.round(t.z[::s, ::s]).astype(int),
+                nx=nx,
+                ny=ny,
+                # west, north, east, south edges of the lift image
+                bounds=[west, north, west + nx * s * cell, north - ny * s * cell],
             ),
             presets={name: w.to_dict() for name, w in PRESETS.items()},
             weather_fields={
@@ -251,6 +255,33 @@ class WebApp:
             etag = f'"{zlib.crc32(body):08x}-{len(body):x}"'
             self._config_bytes = (etag, body, gzip.compress(body, 6))
         return self._config_bytes
+
+    # -- map ------------------------------------------------------------------------------ #
+    def dem_tile(self, z: int, x: int, y: int) -> tuple[str, bytes]:
+        """(ETag, PNG) of an elevation tile of the DEM, cached (the DEM does not change while serving)."""
+        from .tiles import DEM_MAX_ZOOM, dem_tile_png, has_relief
+
+        if not (0 <= z <= DEM_MAX_ZOOM + 3 and 0 <= x < 2**z and 0 <= y < 2**z):
+            raise RequestError(f"tile {z}/{x}/{y} does not exist")
+        key = (z, x, y) if has_relief(self.t, z, x, y) else (-1, 0, 0)  # far from the DEM: one shared flat tile
+        with self._tiles_lock:
+            hit = self._tiles.get(key)
+            if hit is not None:
+                self._tiles.move_to_end(key)
+                return hit
+        png = dem_tile_png(self.t, z, x, y)
+        hit = (f'"dem-{zlib.crc32(png):08x}"', png)
+        with self._tiles_lock:
+            self._tiles[key] = hit
+            while len(self._tiles) > MAX_TILE_CACHE:
+                self._tiles.popitem(last=False)
+        return hit
+
+    def elevation(self, lon: float, lat: float) -> dict:
+        x, y = (float(v) for v in self.t.lonlat_to_xy(lon, lat))
+        inside = bool(self.t.contains(x, y))
+        z = float(self.t.sample(self.t.z, x, y)) if inside else None
+        return dict(lon=lon, lat=lat, inside=inside, z=None if z is None else round(z))
 
     # -- request parsing ------------------------------------------------------------------ #
     def takeoff_xy(self, req: dict) -> tuple[float, float] | None:
@@ -457,6 +488,10 @@ class WebApp:
         routes = RouteOptimizer(planner).optimise()
         print(f"[web] {len(routes)} routes found ({time.perf_counter() - t0:.2f} s)")
 
+        def lonlat(x, y) -> np.ndarray:
+            lon, lat = t.xy_to_lonlat(np.asarray(x), np.asarray(y))
+            return np.round(np.column_stack([lon, lat]), 6)
+
         out_routes = []
         for k, r in enumerate(routes):
             d = route_dict(planner, r)
@@ -464,12 +499,16 @@ class WebApp:
             tp = r.xy[r.turnpoints]
             if r.kind in ("triangle", "fai"):
                 tp = np.vstack([tp, tp[:1]])
+            ground = t.sample(t.z, prof[:, 0], prof[:, 1])
             d.update(
                 color=ROUTE_COLORS[k % len(ROUTE_COLORS)],
                 duration_h=round(r.duration_h, 2),
                 speed_kmh=round(r.speed_kmh, 1),
-                profile=np.round(np.column_stack([prof[:, :2] / 1000, prof[:, 2:3], prof[:, 3:4]]), 4),
-                turnpoints_km=np.round(tp[:, :2] / 1000, 3),
+                # [lon, lat, flight altitude m, local hour, ground altitude m] along the flight
+                path=np.column_stack(
+                    [lonlat(prof[:, 0], prof[:, 1]), np.round(prof[:, 2]), np.round(prof[:, 3], 4), np.round(ground)]
+                ),
+                turnpoints_lonlat=lonlat(tp[:, 0], tp[:, 1]),
             )
             out_routes.append(d)
 
@@ -487,9 +526,10 @@ class WebApp:
                 lat=round(float(lat), 5),
             ),
             nodes=dict(
-                x_km=np.round(planner.x[1:] / 1000, 3),
-                y_km=np.round(planner.y[1:] / 1000, 3),
+                lonlat=lonlat(planner.x[1:], planner.y[1:]),
                 z=np.round(planner.zg[1:]).astype(int),
+                # best climb rate of each thermal node over the day (m/s)
+                climb_ms=np.round(planner.climb[:, 1:].max(axis=0), 1),
             ),
             ceiling=dict(hours=planner.slot_hours, m=np.round(planner.ceil).astype(int)),
             lift=dict(  # integers in hundredths: float32 values would print as 0.27000001072883606 in JSON
@@ -549,7 +589,8 @@ class Handler(BaseHTTPRequestHandler):
         gzipped: bytes | None = None,
     ) -> None:
         """Send a body, gzipped when the browser accepts it and it is worth it."""
-        if "gzip" in self.headers.get("Accept-Encoding", "") and len(body) >= GZIP_MIN_BYTES:
+        compressible = not content_type.startswith("image/")  # PNG is already compressed
+        if compressible and "gzip" in self.headers.get("Accept-Encoding", "") and len(body) >= GZIP_MIN_BYTES:
             body, encoding = (gzipped if gzipped is not None else gzip.compress(body, 5)), "gzip"
         else:
             encoding = None
@@ -568,7 +609,7 @@ class Handler(BaseHTTPRequestHandler):
     def _send_static(self, file: Path, cache: str) -> None:
         self._send_cached(*_static(file), CONTENT_TYPES[file.suffix], cache)
 
-    def _send_cached(self, etag: str, raw: bytes, gz: bytes, content_type: str, cache: str) -> None:
+    def _send_cached(self, etag: str, raw: bytes, gz: bytes | None, content_type: str, cache: str) -> None:
         if etag in self.headers.get("If-None-Match", ""):  # the browser already has it
             self.send_response(HTTPStatus.NOT_MODIFIED)
             self.send_header("ETag", etag)
@@ -593,18 +634,26 @@ class Handler(BaseHTTPRequestHandler):
                 since, wait = int(query.get("since", 0)), float(query.get("wait", 0))
                 job = self.app.wait_job(path.rsplit("/", 1)[1], since, wait)
                 return self._json(job) if job else self._error(HTTPStatus.NOT_FOUND, "unknown job")
-        except ValueError as exc:
+            if path == "/api/elevation":
+                lon, lat = _number(query, "lon", -180, 180), _number(query, "lat", -90, 90)
+                if lon is None or lat is None:
+                    raise RequestError("elevation: lon and lat are required")
+                return self._json(self.app.elevation(lon, lat))
+            if path.startswith("/tiles/dem/") and path.endswith(".png"):
+                parts = path.removeprefix("/tiles/dem/").removesuffix(".png").split("/")
+                if len(parts) != 3:
+                    raise RequestError("expected /tiles/dem/<z>/<x>/<y>.png")
+                etag, png = self.app.dem_tile(*(int(v) for v in parts))
+                return self._send_cached(etag, png, None, "image/png", "public, max-age=86400")
+        except ValueError as exc:  # RequestError included
             return self._error(HTTPStatus.BAD_REQUEST, str(exc))
-        if path == "/static/plotly.min.js":
-            js = _plotly_js()
-            if js is None:
-                return self._error(HTTPStatus.NOT_FOUND, "plotly.min.js not found: is plotly installed?")
-            return self._send_static(js, "public, max-age=604800")  # a week, then revalidated by ETag
         name = "index.html" if path == "/" else path.removeprefix("/static/")
         file = (STATIC_DIR / name).resolve()
-        if file.parent != STATIC_DIR.resolve() or not file.is_file() or file.suffix not in CONTENT_TYPES:
+        if not file.is_relative_to(STATIC_DIR.resolve()) or not file.is_file() or file.suffix not in CONTENT_TYPES:
             return self._error(HTTPStatus.NOT_FOUND, "not found")
-        self._send_static(file, "no-cache")  # always revalidated: edits show at once, unchanged files cost a 304
+        # vendored libraries have the version in their path: cached for a year; our files are always revalidated
+        cache = "public, max-age=31536000, immutable" if "vendor" in file.parts else "no-cache"
+        self._send_static(file, cache)
 
     def do_POST(self) -> None:
         try:

@@ -62,12 +62,16 @@ def _wait(app, job_id, timeout_s=120.0):
     return app.job(job_id)
 
 
-def test_config_describes_the_grid(app, terrain):
+def test_config_describes_the_map(app, terrain):
     cfg = app.config()
-    g = cfg["grid"]
-    assert np.shape(g["z"]) == (len(g["y_km"]), len(g["x_km"]))
-    assert np.all(np.diff(g["x_km"]) > 0) and np.all(np.diff(g["y_km"]) < 0)  # row 0 = north edge
-    assert g["z"][0][0] == round(float(terrain.z[0, 0]))
+    b, g = cfg["dem"]["bounds"], cfg["lift_grid"]
+    assert b["lon_min"] == pytest.approx(6.2) and b["lat_min"] == pytest.approx(44.0)
+    assert (g["ny"], g["nx"]) == terrain.z[:: g["stride"], :: g["stride"]].shape
+    west, north, east, south = g["bounds"]  # the lift image covers the DEM, within one image pixel
+    pixel = g["stride"] * terrain.cell_deg
+    assert abs(west - b["lon_min"]) < pixel and abs(north - b["lat_max"]) < pixel
+    assert abs(east - b["lon_max"]) < pixel and abs(south - b["lat_min"]) < pixel
+    assert "{z}/{x}/{y}" in cfg["dem"]["tiles"]["url"] and "Copernicus" in cfg["dem"]["attribution"]
     assert "good_day" in cfg["presets"] and cfg["forecast"] is True
     json.dumps(cfg, default=lambda o: o.tolist())  # serialisable
 
@@ -115,24 +119,30 @@ def test_plan_from_a_clicked_takeoff(app, terrain):
     assert res["takeoff"]["x_km"] == pytest.approx(x_km) and res["takeoff"]["y_km"] == pytest.approx(y_km)
     assert res["routes"], "\n".join(job["log"])
     assert any(line.startswith("[nodes]") for line in job["log"]), "planner logs are shown on the page"
+    takeoff_lonlat = terrain.xy_to_lonlat(x_km * 1000, y_km * 1000)
+    assert (res["takeoff"]["lon"], res["takeoff"]["lat"]) == pytest.approx(takeoff_lonlat, abs=1e-5)
     for r in res["routes"]:
-        prof = np.asarray(r["profile"])
-        assert prof.shape[1] == 4
-        assert np.allclose(prof[0, :2], [x_km, y_km], atol=1e-3)  # starts at the clicked takeoff
-        assert np.all(np.diff(prof[:, 3]) >= -1e-9)  # time never goes back
-        z_ground = terrain.sample(terrain.z, prof[:, 0] * 1000, prof[:, 1] * 1000)
-        assert np.all(prof[:, 2] >= z_ground - 1.0)
+        path = np.asarray(r["path"])  # lon, lat, flight altitude, hour, ground altitude
+        assert path.shape[1] == 5
+        assert np.allclose(path[0, :2], takeoff_lonlat, atol=1e-5)  # starts at the clicked takeoff
+        assert np.all(np.diff(path[:, 3]) >= -1e-9)  # time never goes back
+        x, y = terrain.lonlat_to_xy(path[:, 0], path[:, 1])
+        assert np.allclose(path[:, 4], terrain.sample(terrain.z, x, y), atol=1.0)
+        assert np.all(path[:, 2] >= path[:, 4] - 1.0)  # never under the ground
         assert [s["t0"] for s in r["segments"]] == sorted(s["t0"] for s in r["segments"])
+    lon, lat = np.asarray(res["nodes"]["lonlat"]).T
+    assert np.all(terrain.contains(*terrain.lonlat_to_xy(lon, lat)))
+    g = app.config()["lift_grid"]
     frames = np.asarray(res["lift"]["frames"]) * res["lift"]["scale"]
-    assert len(frames) == len(res["lift"]["hours"]) and frames[0].shape == np.shape(app.config()["grid"]["z"])
+    assert len(frames) == len(res["lift"]["hours"]) and frames[0].shape == (g["ny"], g["nx"])
     assert frames.min() >= 0 and frames.max() <= 1 and frames.max() > 0.1
 
 
 def test_http_server_end_to_end(app, base_url):
     status, ctype, body = _get(base_url + "/")
-    assert status == 200 and ctype.startswith("text/html") and b"plotly.min.js" in body
-    status, ctype, body = _get(base_url + "/static/plotly.min.js")
-    assert status == 200 and len(body) > 1_000_000  # served from the plotly package, no CDN
+    assert status == 200 and ctype.startswith("text/html") and b"maplibre-gl.js" in body
+    status, ctype, body = _get(base_url + "/static/vendor/maplibre-gl-4.7.1/maplibre-gl.js")
+    assert status == 200 and ctype == "text/javascript" and b"MapLibre" in body[:200]  # vendored, no CDN
     status, ctype, body = _get(base_url + "/api/config")
     assert json.loads(body)["dem"]["name"] == "test"
 
@@ -146,7 +156,7 @@ def test_http_server_end_to_end(app, base_url):
     routes = json.loads(body)["result"]["routes"]
     assert routes and all(r["kind"] in ("triangle", "fai") for r in routes)
     for r in routes:  # closed scoring polyline
-        assert r["turnpoints_km"][0] == r["turnpoints_km"][-1]
+        assert r["turnpoints_lonlat"][0] == r["turnpoints_lonlat"][-1]
 
     status, answer = _post(base_url + "/api/plan", {"objective": "loop"})
     assert status == 400 and "objective" in answer["error"]
@@ -200,12 +210,13 @@ def test_http_compression_and_browser_cache(app, base_url):
         except urllib.error.HTTPError as exc:
             return exc.code, dict(exc.headers), exc.read()
 
-    status, headers, body = get("/static/plotly.min.js", {"Accept-Encoding": "gzip"})
-    assert status == 200 and headers["Content-Encoding"] == "gzip" and "max-age" in headers["Cache-Control"]
+    vendor = "/static/vendor/maplibre-gl-4.7.1/maplibre-gl.js"
+    status, headers, body = get(vendor, {"Accept-Encoding": "gzip"})
+    assert status == 200 and headers["Content-Encoding"] == "gzip" and "immutable" in headers["Cache-Control"]
     import gzip
 
     assert len(body) < len(gzip.decompress(body)) / 2
-    status, headers2, body = get("/static/plotly.min.js", {"If-None-Match": headers["ETag"]})
+    status, headers2, body = get(vendor, {"If-None-Match": headers["ETag"]})
     assert status == 304 and body == b""
     status, headers, body = get("/api/config", {"Accept-Encoding": "gzip"})
     assert headers["Content-Encoding"] == "gzip" and json.loads(gzip.decompress(body))["dem"]["name"] == "test"
@@ -216,3 +227,64 @@ def test_http_compression_and_browser_cache(app, base_url):
     status, headers, _ = get("/api/config", {})
     status, _, body = get("/api/config", {"If-None-Match": headers["ETag"]})
     assert status == 304 and body == b""  # the DEM grid is downloaded once per browser
+
+
+def test_dem_tiles_and_elevation(app, base_url, terrain):
+    from PIL import Image
+
+    from cheminee.web.tiles import decode_terrain_rgb, tile_lonlat
+
+    # a zoom 14 tile inside the analytic DEM (lon 6.2-6.267, lat 44.0-44.067)
+    z, x, y = 14, 8475, 5955
+    lon, lat = tile_lonlat(z, x, y)
+    assert 6.2 < lon.min() and lat.max() < 44.067
+    status, headers, body = _get(f"{base_url}/tiles/dem/{z}/{x}/{y}.png")
+    assert status == 200 and headers == "image/png"
+    heights = decode_terrain_rgb(np.asarray(Image.open(__import__("io").BytesIO(body)).convert("RGB")))
+    rows, cols = [10, 128, 250], [5, 128, 240]
+    for r, c in zip(rows, cols):  # same altitude as the DEM the planner uses, to the metre
+        expected = terrain.sample(terrain.z, *terrain.lonlat_to_xy(lon[c], lat[r]))
+        assert heights[r, c] == pytest.approx(float(expected), abs=0.55)
+    # far from the DEM: flat tile at the lowest DEM altitude, shared by every such tile
+    outside = decode_terrain_rgb(
+        np.asarray(Image.open(__import__("io").BytesIO(_get(f"{base_url}/tiles/dem/14/0/0.png")[2])))
+    )
+    assert np.allclose(outside, float(terrain.z.min()), atol=0.55)
+    assert app.dem_tile(14, 0, 0) is app.dem_tile(14, 1, 1)
+
+    status, _, body = _get(f"{base_url}/api/elevation?lon=6.23&lat=44.03")
+    point = json.loads(body)
+    assert point["inside"] and point["z"] == round(float(terrain.sample(terrain.z, *terrain.lonlat_to_xy(6.23, 44.03))))
+    assert json.loads(_get(f"{base_url}/api/elevation?lon=7&lat=45")[2]) == {
+        "lon": 7.0,
+        "lat": 45.0,
+        "inside": False,
+        "z": None,
+    }
+    for bad in ("/tiles/dem/99/0/0.png", "/tiles/dem/3/9/0.png", "/tiles/dem/a/b/c.png", "/api/elevation?lon=6.2"):
+        with pytest.raises(urllib.error.HTTPError) as err:
+            _get(base_url + bad)
+        assert err.value.code == 400
+
+
+def test_terrain_rgb_roundtrip():
+    from cheminee.web.tiles import decode_terrain_rgb, encode_terrain_rgb
+
+    h = np.array([[-50.0, 0.0, 509.27], [1971.04, 4807.8, 8848.86]])
+    assert np.allclose(decode_terrain_rgb(encode_terrain_rgb(h)), h, atol=0.05)
+
+
+def test_dem_tiles_slope_down_outside_the_dem(terrain):
+    from cheminee.web.tiles import APRON_M, dem_heights, tile_lonlat
+
+    z, x, y = 13, 4237, 2977  # straddles the western edge of the analytic DEM (lon 6.2)
+    lon, lat = tile_lonlat(z, x, y)
+    h = dem_heights(terrain, z, x, y)
+    row = int(np.argmin(np.abs(lat - 44.03)))
+    west = lon < 6.2
+    assert west.any() and (~west).any()
+    line = h[row]
+    assert np.all(np.diff(line[west]) >= -1e-3), "the apron rises towards the DEM edge (no wall, no pit)"
+    floor = float(terrain.z.min())
+    assert np.all(line[west] >= floor - 1e-3) and np.all(line[west] <= line[west][-1] + 1e-3)
+    assert APRON_M > 0

@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cheminee</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/vendor/maplibre-gl-4.7.1/maplibre-gl.css">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -15,8 +17,8 @@
 
   <section>
     <h2><span class="step">1</span> Takeoff</h2>
-    <p id="takeoff-info" class="hint">Click on the terrain to place the takeoff. Without one, the planner picks a high
-      spot with good lift.</p>
+    <p id="takeoff-info" class="hint">Click on the map, inside the computed area, to place the takeoff. Without
+      one, the planner picks a high spot with good lift.</p>
     <button id="btn-clear-takeoff" class="secondary" hidden>Let the planner choose</button>
   </section>
 
@@ -72,21 +74,25 @@
 </aside>
 
 <main>
-  <div id="plot"></div>
+  <div id="map"></div>
   <div id="toolbar">
-    <label>Colour <select id="colour">
-      <option value="altitude">altitude</option>
-      <option value="lift">lift index</option>
+    <label>Map <select id="basemap">
+      <option value="topo">OpenTopoMap</option>
+      <option value="osm">OpenStreetMap</option>
+      <option value="none">none (offline)</option>
     </select></label>
-    <label id="hour-box" hidden>Lift at <input type="range" id="hour" min="0" max="0" step="1"> <b id="hour-label"></b></label>
-    <label>Relief ×<select id="exaggeration">
-      <option>1</option><option selected>1.5</option><option>2</option><option>3</option>
+    <label>Relief <select id="exaggeration">
+      <option value="0">flat (2D)</option><option value="1">×1</option>
+      <option value="1.5" selected>×1.5</option><option value="2">×2</option><option value="3">×3</option>
     </select></label>
+    <label id="lift-box" hidden><input type="checkbox" id="show-lift" checked> Lift at
+      <input type="range" id="hour" min="0" max="0" step="1"> <b id="hour-label"></b>
+      <span class="ramp" title="lift index 0 → 0.8"></span></label>
     <span class="hint" id="cursor"></span>
   </div>
 </main>
 
-<script src="/static/plotly.min.js"></script>
+<script src="/static/vendor/maplibre-gl-4.7.1/maplibre-gl.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>
