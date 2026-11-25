@@ -288,3 +288,22 @@ def test_dem_tiles_slope_down_outside_the_dem(terrain):
     floor = float(terrain.z.min())
     assert np.all(line[west] >= floor - 1e-3) and np.all(line[west] <= line[west][-1] + 1e-3)
     assert APRON_M > 0
+
+
+def test_track_is_dense_and_above_the_ground(app, terrain):
+    from cheminee.web.server import TRACK_STEP_M, densify
+
+    prof = np.array([[0.0, 0.0, 1000.0, 11.0], [0.0, 0.0, 1500.0, 11.2], [600.0, 800.0, 1400.0, 11.4]])
+    dense = densify(prof)
+    assert np.allclose(dense[[0, 1, -1]], prof)  # original points kept, climb untouched
+    step = np.hypot(*np.diff(dense[:, :2], axis=0).T)
+    assert step.max() <= TRACK_STEP_M + 1e-9 and np.all(np.diff(dense[:, 3]) >= 0)
+
+    job = _wait(app, app.start_plan({"takeoff": {"x_km": 1.6, "y_km": 4.0}, "objective": "free"}))
+    for r in job["result"]["routes"]:
+        track = np.asarray(r["track"])  # lon, lat, flight altitude, ground altitude
+        x, y = terrain.lonlat_to_xy(track[:, 0], track[:, 1])
+        assert np.hypot(np.diff(x), np.diff(y)).max() <= TRACK_STEP_M + 1.0
+        assert np.allclose(track[:, 3], terrain.sample(terrain.z, x, y), atol=1.0)
+        assert np.all(track[:, 2] >= track[:, 3] - 1.0)
+        assert np.allclose(track[0, :2], r["path"][0][:2]) and np.allclose(track[-1, :2], r["path"][-1][:2])

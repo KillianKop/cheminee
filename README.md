@@ -28,7 +28,7 @@ Python 3.10 or later.
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 tar -xzf data/rasters_COP30_sample.tar.gz -C data/     # sample DEM -> data/output_hh.asc
-pytest                                                 # 57 tests, about 15 s
+pytest                                                 # 58 tests, about 15 s
 cheminee serve data/output_hh.asc --open               # web interface (3D map) on http://127.0.0.1:8765
 cheminee gui data/output_hh.asc                        # 2D interface
 ```
@@ -130,7 +130,9 @@ open the URL printed by the command in a browser, save the answer and pass it wi
 3. **Weather**: a preset, optionally the Open-Meteo forecast of the date at the takeoff, and any value forced by
    hand. **Preview the weather** shows ceiling, cloud base, wind and sunshine hour by hour.
 4. **Flights**: objective and number of routes, then **Compute flights**. The planner log is shown while it
-   runs. Routes, turnpoints and thermal nodes are drawn on the map; click a route to show or hide it,
+   runs. Routes are drawn in 3D at their flight altitude: climbs in thermals as columns, glides as descending
+   ribbons, with a translucent curtain down to the ground; turnpoints and thermal nodes are drawn on the ground.
+   Click a route to show or hide it,
    **profile & segments** shows its altitude profile (flight, ground, ceiling) and lists its climbs and glides.
    The toolbar overlays the lift index of any hour, switches the background map and sets the relief.
 

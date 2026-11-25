@@ -70,6 +70,19 @@ WEATHER_FIELDS = {
 }
 
 
+TRACK_STEP_M = 60.0  # spacing of the 3D track points sent to the map
+
+
+def densify(profile: np.ndarray, step_m: float = TRACK_STEP_M) -> np.ndarray:
+    """Profile rows (x, y, altitude, hour) with extra points so that consecutive ones are at most `step_m` apart
+    horizontally (straight glides between thermals; climbs, at a fixed position, are kept as they are)."""
+    parts = [profile[:1]]
+    for a, b in zip(profile[:-1], profile[1:]):
+        n = max(1, int(np.ceil(np.hypot(b[0] - a[0], b[1] - a[1]) / step_m)))
+        parts.append(a + (b - a) * (np.arange(1, n + 1) / n)[:, None])
+    return np.vstack(parts)
+
+
 class RequestError(ValueError):
     """Invalid request: answered with HTTP 400 and the message."""
 
@@ -500,6 +513,7 @@ class WebApp:
             if r.kind in ("triangle", "fai"):
                 tp = np.vstack([tp, tp[:1]])
             ground = t.sample(t.z, prof[:, 0], prof[:, 1])
+            dense = densify(prof)
             d.update(
                 color=ROUTE_COLORS[k % len(ROUTE_COLORS)],
                 duration_h=round(r.duration_h, 2),
@@ -509,6 +523,14 @@ class WebApp:
                     [lonlat(prof[:, 0], prof[:, 1]), np.round(prof[:, 2]), np.round(prof[:, 3], 4), np.round(ground)]
                 ),
                 turnpoints_lonlat=lonlat(tp[:, 0], tp[:, 1]),
+                # [lon, lat, flight altitude m, ground altitude m] every TRACK_STEP_M at most: the 3D track
+                track=np.column_stack(
+                    [
+                        lonlat(dense[:, 0], dense[:, 1]),
+                        np.round(dense[:, 2]),
+                        np.round(t.sample(t.z, dense[:, 0], dense[:, 1])),
+                    ]
+                ),
             )
             out_routes.append(d)
 
