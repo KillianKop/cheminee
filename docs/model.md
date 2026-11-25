@@ -178,6 +178,16 @@ keep 60 m of clearance above the terrain along the whole glide (started at the c
 120 m above $b$. This is MacCready's reasoning: fly faster when the next thermal is strong, and into the wind.
 The mean speed of the flight is therefore no longer a parameter: it is a result.
 
+**Final glide.** The search climbs back to the ceiling in every thermal, including the last one. Once a route is
+chosen, its last glide $a \to b$ is redone (`Params.final_glide`, on by default): in the thermal of $a$ the pilot
+climbs only to the height that glide needs,
+
+$$h_{need}(v) = \max\Big(z_b + 120 + d\,\frac{s(v)}{v_{gnd}(v)},\ \max_x \big(\text{terrain}(x) + \text{clearance} + \text{loss from } x \text{ to } b\big)\Big),$$
+
+at the speed minimising climb time + glide time, and the flight ends on arrival at $b$. The route therefore
+arrives 120 m above the goal, or higher only when a ridge on the way requires it; its duration no longer
+includes a climb after landing.
+
 ### 5.3 Free distance
 
 Search in 5-minute steps: at each (node, time) the 3 best route beginnings are kept, in the sense of free
@@ -264,4 +274,6 @@ What these numbers say:
 - Land cover (forest, rock, meadow) as terrain features.
 - Horizontally varying wind (valley channelling, convergence).
 - Airspace and landing fields as optimiser constraints.
-- Variable start altitude per leg (do not always climb back to the ceiling).
+- Variable start altitude on every leg, not only the last one (do not always climb back to the ceiling):
+  altitude as a state of the search, so that weak thermals are left early.
+- Free distance: end with a glide beyond the last thermal, to the farthest reachable point.

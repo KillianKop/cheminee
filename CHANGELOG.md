@@ -21,6 +21,10 @@ The flight package has its own version number (`version` in the JSON, see [docs/
 
 ### Fixed
 
+- Final glide: the last thermal was climbed to the ceiling and routes ended far above the goal (640 m above
+  ground on the sample triangle), with one more climb counted after arrival in their duration and speed. The
+  last climb now stops at the height the final glide needs (arrival margin, terrain on the way), at the best
+  speed, and routes end on arrival (`Params.final_glide`).
 - Forecast not covering the flying day (date beyond the model range, e.g. AROME two days ahead) was converted
   into a ceiling at the station altitude all afternoon. It is now refused (`ForecastUnavailable`), with a clear
   message on the command line and in the web interface.
