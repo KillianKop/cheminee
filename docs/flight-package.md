@@ -57,6 +57,10 @@ A `climb` segment gives the node, start and end times and altitudes (`t0`, `t1`,
 rate `rate` (m/s). A `glide` segment also gives the departure node `src` and the arrival node `dst`, the
 horizontal length `dist` (m), the mean ground speed `gs_kmh`, the sink rate `sink_ms`, the **airspeed to fly**
 `airspeed_kmh` (chosen by the planner) and the **arrival margin** `margin_m` above the ground at `dst`.
+The planner counts the rising air met along a glide (lift zones, where the pilot slows down to minimum sink): a
+glide can therefore lose little height or even gain some. `sink_ms` is then small or **negative** and `a1 > a0`;
+readers must not assume that a glide always goes down. The routing graph keeps heights lost `>= 0` (a glide from
+the ceiling cannot climb above it; from the takeoff, a gain is reported as 0, the cautious value).
 
 Segments are contiguous: the end of one is the start of the next, in time and in altitude. Glides shorter than
 300 m between two neighbouring thermals are merged into a single climb.

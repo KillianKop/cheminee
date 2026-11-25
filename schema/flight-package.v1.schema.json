@@ -103,7 +103,7 @@
         "a0": {"type": "number"}, "a1": {"type": "number"},
         "dist": {"type": "number", "description": "Horizontal length, metres."},
         "gs_kmh": {"type": "number", "description": "Mean ground speed."},
-        "sink_ms": {"type": "number", "description": "Mean sink rate (positive downwards)."},
+        "sink_ms": {"type": "number", "description": "Mean sink rate (positive downwards; negative when rising air met on the glide made it gain height, then a1 > a0)."},
         "airspeed_kmh": {"type": "number", "description": "Speed to fly chosen by the planner."},
         "margin_m": {"type": "number", "description": "Arrival height above the ground of dst."}
       }

@@ -275,7 +275,9 @@ def routing_graph(pl: Planner) -> dict:
                 wind_dir_deg=round(float(np.degrees(np.arctan2(-wind[0], -wind[1])) % 360)),
                 edges=edges,
                 takeoff_edges=[
-                    [int(j), round(float(slot.low0_t[j])), round(float(slot.low0_loss[j]))] for j in slot.low0_nbrs
+                    # rising air can make that glide climb: the package keeps a height lost >= 0 (cautious)
+                    [int(j), round(float(slot.low0_t[j])), round(max(float(slot.low0_loss[j]), 0.0))]
+                    for j in slot.low0_nbrs
                 ],
             )
         )

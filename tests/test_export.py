@@ -50,7 +50,9 @@ def test_route_segments_are_continuous_and_alternate(package):
             assert b["a0"] == pytest.approx(a["a1"], abs=1)
         for s in segs:
             if s["type"] == "glide":
-                assert s["dist"] >= 300 and s["a1"] < s["a0"] and s["margin_m"] > 0
+                assert s["dist"] >= 300 and s["margin_m"] > 0
+                # rising air can make a glide gain height: then its sink rate is negative
+                assert s["sink_ms"] * (s["a0"] - s["a1"]) >= 0
                 assert 25 <= s["airspeed_kmh"] <= 60
             else:
                 assert s["a1"] > s["a0"] and s["rate"] > 0
@@ -66,10 +68,12 @@ def test_routing_graph_is_consistent(package):
         assert slot["t1"] > slot["t0"]
         for row in slot["edges"]:
             assert len(row) == width and 0 <= row[0] < n and 0 <= row[1] < n and row[0] != row[1]
+            assert all(v >= 0 or v == -1 for v in row[3::2])  # heights lost: >= 0, or -1 when not feasible
             pairs = list(zip(row[2::2], row[3::2]))
             assert any(g > 0 for g, _ in pairs)
             assert all((g == -1) == (loss == -1) for g, loss in pairs)
             assert all(loss <= slot["ceiling_m"] for g, loss in pairs)
+        assert all(row[2] >= 0 for row in slot["takeoff_edges"])  # cautious: a gain is reported as 0
 
 
 def test_short_glides_are_folded_into_one_climb():
