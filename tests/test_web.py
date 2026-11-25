@@ -108,7 +108,16 @@ def test_weather_points_placed_by_hand_and_planned(app, terrain):
     with pytest.raises(RequestError, match="outside"):
         app.weather_summary({**req, "weather_sites": [[0.0, 0.0], sites[1]]})
     with pytest.raises(RequestError, match="weather_points"):
-        app.weather_summary({**req, "weather_points": 2})
+        app.weather_summary({**req, "weather_points": 11})
+    with pytest.raises(RequestError, match="weather_points"):
+        app.weather_summary({**req, "weather_points": 2.5})
+    with pytest.raises(RequestError, match="at most 1"):
+        app.weather_summary({**req, "weather_points": 2})  # two points placed for two weather points
+    before = len(app.fetch_calls)
+    ten = app.weather_summary({**req, "weather_points": 10, "weather_sites": [None, None, sites[0]]})
+    assert len(ten["points"]) == 10 and np.allclose((ten["points"][3]["lon"], ten["points"][3]["lat"]), sites[0])
+    assert len(app.fetch_calls) - before <= 8, "the takeoff and the point placed before are not downloaded again"
+    assert app.config()["defaults"]["max_weather_points"] == 10
     job = _wait(app, app.start_plan({**req, "objective": "free", "n_routes": 1, "t_start": 11, "t_end": 15}))
     assert job["status"] == "done", job.get("error")
     result = job["result"]

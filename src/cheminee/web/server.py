@@ -42,6 +42,7 @@ import numpy as np
 
 from ..config import OBJECTIVES, Params
 from ..domain import Terrain
+from ..planning.sites import MAX_POINTS as MAX_WEATHER_POINTS
 from ..weather import PRESETS, Weather
 
 STATIC_DIR = Path(__file__).with_name("static")
@@ -302,6 +303,7 @@ class WebApp:
                 glide_lift=p.glide_lift_efficiency,
                 forecast_model="meteofrance_seamless",
                 weather_points=3,
+                max_weather_points=MAX_WEATHER_POINTS,
             ),
         )
 
@@ -373,28 +375,33 @@ class WebApp:
             raise RequestError(f"date: expected YYYY-MM-DD, got {req['date']!r}") from None
 
     def weather_sites(self, req: dict) -> list[tuple[float, float, str]]:
-        """(x, y, role) of the weather points: the takeoff (or the DEM centre) and, with "weather_points": 3
-        (the default), two points of a triangle around it, automatic or given as "weather_sites": [[lon, lat], ...]."""
-        from ..planning.sites import weather_sites
+        """(x, y, role) of the weather points: the takeoff (or the DEM centre), then "weather_points" - 1 other
+        points (3 in all by default, up to `MAX_POINTS`). "weather_sites" lists the points placed by the user,
+        [[lon, lat] or null, ...] for points 2, 3...; the others are placed around the takeoff."""
+        from ..planning.sites import MAX_POINTS, weather_sites
 
         xy = self.takeoff_xy(req)
         anchor = xy or (0.5 * self.t.width, 0.5 * self.t.height)
-        n = int(_number(req, "weather_points", 1, 3, 3))
-        if n not in (1, 3):
-            raise RequestError("weather_points: 1 or 3")
-        role = "takeoff" if xy else "map centre"
-        if n == 1:
-            return [(anchor[0], anchor[1], role)]
+        n = _number(req, "weather_points", 1, MAX_POINTS, 3)
+        if n != int(n):
+            raise RequestError(f"weather_points: a whole number from 1 to {MAX_POINTS}")
+        n = int(n)
+        sites = req.get("weather_sites") or []
+        if not isinstance(sites, list) or len(sites) > n - 1:
+            raise RequestError(f"weather_sites: at most {n - 1} points for {n} weather points")
         manual = []
-        for k, site in enumerate(req.get("weather_sites") or []):
+        for k, site in enumerate(sites):
+            if site is None:
+                manual.append(None)
+                continue
             if not isinstance(site, (list, tuple)) or len(site) != 2:
-                raise RequestError("weather_sites: expected [[lon, lat], [lon, lat]]")
+                raise RequestError("weather_sites: expected [[lon, lat] or null, ...]")
             pt = {"lon": site[0], "lat": site[1]}
             x, y = self.t.lonlat_to_xy(_number(pt, "lon", -180, 180), _number(pt, "lat", -90, 90))
             if not self.t.contains(x, y):
                 raise RequestError(f"weather_sites: point {k + 2} is outside the DEM")
             manual.append((float(x), float(y)))
-        return weather_sites(self.t, anchor, manual or None, role)
+        return weather_sites(self.t, anchor, manual, "takeoff" if xy else "map centre", n)
 
     def _forecast(self, req: dict, lon: float, lat: float, base: Weather) -> tuple[Weather, str]:
         """Open-Meteo forecast of the request at one place (answers cached: request counts stay low)."""
@@ -425,8 +432,8 @@ class WebApp:
     def resolve_weather(self, req: dict) -> tuple[Weather, list[str], tuple]:
         """Preset, then forecast (optional), then explicit values: the same order as the command line.
 
-        Returns (weather of the takeoff, sources, weather points). With a forecast and "weather_points": 3 (the
-        default) the forecast is taken at three points (`weather_sites`); explicit values apply to all of them.
+        Returns (weather of the takeoff, sources, weather points). With a forecast it is taken at every weather
+        point (`weather_sites`, 3 by default, a few requests at once); explicit values apply to all of them.
         Without a forecast the weather is the same everywhere: no weather points."""
         from ..weather import WeatherPoint
 
@@ -436,15 +443,19 @@ class WebApp:
         base = Weather.from_dict(PRESETS[preset].to_dict())
         sources = [f"preset {preset}"]
         sites = self.weather_sites(req) if req.get("forecast") else [(0.5 * self.t.width, 0.5 * self.t.height, "")]
-        weathers = []
-        for x, y, role in sites:
-            if req.get("forecast"):
-                lon, lat = (float(v) for v in self.t.xy_to_lonlat(x, y))
-                weather, source = self._forecast(req, lon, lat, Weather.from_dict(base.to_dict()))
-                sources.append(source + (f" ({role})" if len(sites) > 1 else ""))
-            else:
-                weather = Weather.from_dict(base.to_dict())
-            weathers.append(weather)
+        if req.get("forecast"):
+
+            def one(site):
+                lon, lat = (float(v) for v in self.t.xy_to_lonlat(site[0], site[1]))
+                return self._forecast(req, lon, lat, Weather.from_dict(base.to_dict()))
+
+            with ThreadPoolExecutor(max_workers=4) as pool:  # a few requests at once, kept low for Open-Meteo
+                answers = list(pool.map(one, sites))
+            weathers = [w for w, _ in answers]
+            tag = (lambda role: f" ({role})") if len(sites) > 1 else (lambda role: "")
+            sources += [src + tag(role) for (_, src), (_, _, role) in zip(answers, sites)]
+        else:
+            weathers = [Weather.from_dict(base.to_dict())]
         overrides = req.get("weather") or {}
         for name, value in overrides.items():
             if name not in WEATHER_FIELDS:

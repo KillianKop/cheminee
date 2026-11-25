@@ -62,10 +62,11 @@ def _add_flight_args(sp: argparse.ArgumentParser) -> None:
     g.add_argument(
         "--weather-points",
         type=int,
-        choices=(1, 3),
+        choices=range(1, 11),
         default=3,
-        help="with --forecast: forecast at the takeoff only (1), or at the takeoff and two points of a triangle "
-        "around it (3, default), blended in between",
+        metavar="N",
+        help="with --forecast: forecast at the takeoff and N - 1 points around it (1 to 10, default 3), "
+        "blended in between",
     )
     g.add_argument(
         "--weather-point",
@@ -73,7 +74,7 @@ def _add_flight_args(sp: argparse.ArgumentParser) -> None:
         type=float,
         action="append",
         metavar=("LON", "LAT"),
-        help="place a weather point yourself (give it twice for the two points after the takeoff)",
+        help="place weather point 2, then 3... yourself (repeat the option); the others are placed automatically",
     )
     g.add_argument(
         "--forecast-model",
@@ -142,7 +143,7 @@ def lift_factory(model_path: str | None):
 
 
 def build_weather_points(args, terrain, takeoff_xy) -> tuple:
-    """Weather at the takeoff and two points of a triangle around it (`--weather-points 3` with `--forecast`)."""
+    """Weather at the takeoff and `--weather-points` - 1 points around it (with `--forecast`)."""
     from .planning.sites import weather_sites
     from .weather import WeatherPoint
 
@@ -150,8 +151,11 @@ def build_weather_points(args, terrain, takeoff_xy) -> tuple:
         return ()
     anchor = takeoff_xy or (0.5 * terrain.width, 0.5 * terrain.height)
     manual = [terrain.lonlat_to_xy(lon, lat) for lon, lat in (args.weather_point or [])]
+    if len(manual) > args.weather_points - 1:
+        raise SystemExit(f"--weather-point given {len(manual)} times for --weather-points {args.weather_points}")
     points = []
-    for x, y, role in weather_sites(terrain, anchor, manual or None, "takeoff" if takeoff_xy else "map centre"):
+    role0 = "takeoff" if takeoff_xy else "map centre"
+    for x, y, role in weather_sites(terrain, anchor, manual, role0, args.weather_points):
         lon, lat = (float(v) for v in terrain.xy_to_lonlat(x, y))
         points.append(WeatherPoint(round(lon, 5), round(lat, 5), build_weather(args, lat, lon), role))
     ceilings = ", ".join(f"{q.role} {q.weather.ceiling(14.0):.0f} m" for q in points)

@@ -80,3 +80,37 @@ def test_weather_sites_around_the_takeoff(terrain):
     assert [(x, y) for x, y, _ in manual[1:]] == [(2000.0, 3000.0), (4000.0, 1500.0)]
     one = weather_sites(terrain, (1000.0, 1000.0), [(2000.0, 3000.0)])  # the other point stays automatic
     assert len(one) == 3 and one[1][:2] == (2000.0, 3000.0) and one[2] == weather_sites(terrain, (1000.0, 1000.0))[2]
+
+
+def test_up_to_ten_weather_points(terrain):
+    """n points: the takeoff and a regular polygon through it (the triangle of side 20 km at most for n = 3),
+    inside the DEM; points placed by hand may be given for any rank, the others stay automatic."""
+    import pytest
+
+    from cheminee.planning.sites import MAX_POINTS
+
+    anchor = (0.2 * terrain.width, 0.3 * terrain.height)
+    for n in range(1, MAX_POINTS + 1):
+        sites = weather_sites(terrain, anchor, n=n)
+        assert len(sites) == n and sites[0][:2] == anchor
+        xy = np.array([s[:2] for s in sites])
+        assert all(terrain.contains(x, y) for x, y in xy)
+        if n > 1:
+            gaps = np.hypot(*(xy[:, None] - xy[None]).transpose(2, 0, 1))[~np.eye(n, dtype=bool)]
+            assert gaps.min() > 300.0  # distinct points
+    auto = weather_sites(terrain, anchor, n=6)
+    sparse = weather_sites(terrain, anchor, [None, (1500.0, 2500.0), None], n=6)
+    assert sparse[2][:2] == (1500.0, 2500.0)
+    assert [s[:2] for k, s in enumerate(sparse) if k != 2] == [s[:2] for k, s in enumerate(auto) if k != 2]
+    with pytest.raises(ValueError):
+        weather_sites(terrain, anchor, n=MAX_POINTS + 1)
+
+
+def test_five_weather_points_plan(terrain, params):
+    pts = _points(terrain, [(0.1, 0.5, LOW), (0.9, 0.2, HIGH), (0.9, 0.8, HIGH), (0.5, 0.1, LOW), (0.5, 0.9, HIGH)])
+    pl = _planner(terrain, dataclasses.replace(params, weather=pts[0].weather, weather_points=pts))
+    assert pl.node_weights.shape == (5, pl.n) and np.allclose(pl.node_weights.sum(axis=0), 1.0)
+    assert np.allclose(pl.lift.norm, 1.0, atol=2e-3)  # float16 weights, divided out
+    for r in RouteOptimizer(pl).optimise("free")[:2]:
+        for g in r.legs:
+            assert pl.glide_clear(g, tolerance_m=1.0)
