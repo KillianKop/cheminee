@@ -40,6 +40,13 @@
       <span class="hint">(network; at the takeoff, else the map centre)</span></label>
     <label>Forecast model <select id="forecast_model"></select></label>
     <p id="model-hint" class="hint"></p>
+    <label title="with a forecast: weather at the takeoff and at two points of a triangle around it, blended in between">
+      Weather points <select id="weather_points">
+        <option value="3">3: takeoff + 2 points around it</option>
+        <option value="1">1: takeoff only</option>
+      </select></label>
+    <p id="points-hint" class="hint">Shown on the map after a preview or a plan; drag points 2 and 3 to move them.
+      <button id="btn-reset-points" class="link" hidden>Back to automatic points</button></p>
     <label class="check"><input type="checkbox" id="shadows"> Terrain shadows (slower)</label>
     <details id="weather-details">
       <summary>Adjust values <span class="hint">(empty = preset / forecast)</span></summary>

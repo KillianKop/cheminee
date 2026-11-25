@@ -60,6 +60,22 @@ def _add_flight_args(sp: argparse.ArgumentParser) -> None:
     )
     g.add_argument("--forecast-json", metavar="FILE", help="use a saved Open-Meteo answer instead of downloading it")
     g.add_argument(
+        "--weather-points",
+        type=int,
+        choices=(1, 3),
+        default=3,
+        help="with --forecast: forecast at the takeoff only (1), or at the takeoff and two points of a triangle "
+        "around it (3, default), blended in between",
+    )
+    g.add_argument(
+        "--weather-point",
+        nargs=2,
+        type=float,
+        action="append",
+        metavar=("LON", "LAT"),
+        help="place a weather point yourself (give it twice for the two points after the takeoff)",
+    )
+    g.add_argument(
         "--forecast-model",
         default="meteofrance_seamless",
         help="Open-Meteo `models` value (default: Meteo-France AROME / ARPEGE); "
@@ -111,15 +127,36 @@ def build_weather(args, lat: float, lon: float) -> Weather:
 
 
 def lift_factory(model_path: str | None):
-    """Lift model factory `(terrain, params) -> LiftModel`: ThermalNet with a checkpoint, else the heuristic."""
+    """Lift model factory `(terrain, params) -> LiftModel`: ThermalNet with a checkpoint, else the heuristic;
+    with several weather points (`Params.weather_points`), one field per point weather, blended."""
+    from .lift.points import with_weather_points
+
     if model_path:
         from .lift.neural import NeuralLift, load_checkpoint
 
         net, _ = load_checkpoint(model_path)
-        return lambda t, p: NeuralLift(t, p, net)
+        return with_weather_points(lambda t, p: NeuralLift(t, p, net))
     from .lift import HeuristicLift
 
-    return lambda t, p: HeuristicLift(t, p)
+    return with_weather_points(lambda t, p: HeuristicLift(t, p))
+
+
+def build_weather_points(args, terrain, takeoff_xy) -> tuple:
+    """Weather at the takeoff and two points of a triangle around it (`--weather-points 3` with `--forecast`)."""
+    from .planning.sites import weather_sites
+    from .weather import WeatherPoint
+
+    if not args.forecast or args.forecast_json or args.weather_points == 1:
+        return ()
+    anchor = takeoff_xy or (0.5 * terrain.width, 0.5 * terrain.height)
+    manual = [terrain.lonlat_to_xy(lon, lat) for lon, lat in (args.weather_point or [])]
+    points = []
+    for x, y, role in weather_sites(terrain, anchor, manual or None, "takeoff" if takeoff_xy else "map centre"):
+        lon, lat = (float(v) for v in terrain.xy_to_lonlat(x, y))
+        points.append(WeatherPoint(round(lon, 5), round(lat, 5), build_weather(args, lat, lon), role))
+    ceilings = ", ".join(f"{q.role} {q.weather.ceiling(14.0):.0f} m" for q in points)
+    print(f"[weather] {len(points)} weather points, ceiling at 14 h solar: {ceilings}")
+    return tuple(points)
 
 
 def _flight_setup(args):
@@ -128,24 +165,22 @@ def _flight_setup(args):
 
     terrain = Terrain.from_asc(args.dem)
     day = dt.date.fromisoformat(args.date).timetuple().tm_yday if args.date else args.day
+    to_xy = lambda lonlat: tuple(float(v) for v in terrain.lonlat_to_xy(*lonlat))  # noqa: E731
+    takeoff = to_xy(args.takeoff) if args.takeoff else None
+    points = build_weather_points(args, terrain, takeoff)
+    lat, lon = (args.takeoff[1], args.takeoff[0]) if args.takeoff else (terrain.lat_mid, terrain.lon_mid)
     params = Params(
         day_of_year=day,
         utc_offset=args.utc_offset,
         t_start=args.t_start,
         t_end=args.t_end,
-        weather=build_weather(args, terrain.lat_mid, terrain.lon_mid),
+        weather=points[0].weather if points else build_weather(args, lat, lon),
+        weather_points=points,
         objective=args.objective,
         glide_lift_efficiency=args.glide_lift,
     )
     factory = lift_factory(args.model)
-    to_xy = lambda lonlat: tuple(float(v) for v in terrain.lonlat_to_xy(*lonlat))  # noqa: E731
-    return (
-        terrain,
-        params,
-        factory,
-        to_xy(args.takeoff) if args.takeoff else None,
-        to_xy(args.goal) if args.goal else None,
-    )
+    return terrain, params, factory, takeoff, to_xy(args.goal) if args.goal else None
 
 
 def _plan(args):
@@ -179,6 +214,9 @@ def cmd_gui(args) -> None:
     from .viz.gui import App
 
     terrain, params, factory, takeoff, goal = _flight_setup(args)
+    if params.weather_points:  # the sliders change one weather: the GUI uses the one of the takeoff
+        print("[gui] weather of the takeoff only (the sliders change a single weather)")
+        params.weather_points = ()
     app = App(terrain, params, factory, takeoff)
     if goal:
         app.goal = goal

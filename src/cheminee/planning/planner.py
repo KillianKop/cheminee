@@ -8,7 +8,9 @@ Physics of one leg i -> j (speed-to-fly, MacCready-like):
               the height lost during that glide
 The airspeed v is chosen among the speeds of the glider polar to minimise time(v),
 subject to terrain clearance and to the arrival margin above j. Wind (at glide
-altitude) and ceiling change from hour to hour ("slots"). In the lift zones met along
+altitude) and ceiling change from hour to hour ("slots"), and from place to place when
+the weather is given at several points (`Params.weather_points`: each node climbs to its
+own ceiling, each leg has its own wind). In the lift zones met along
 the glide (lift field above the usable threshold, e.g. a working ridge) the pilot slows
 down to minimum sink and the rising air lifts the glider: the glide loses less height
 and can even climb, never above the ceiling.
@@ -29,6 +31,7 @@ from scipy import ndimage
 from ..config import Params
 from ..domain import Route, Terrain, three_tp_distance
 from ..lift import LiftModel
+from ..weather.points import point_weights
 
 _EMPTY = np.array([], dtype=int)
 N_SAMPLES = 63  # points checked along every leg
@@ -36,19 +39,20 @@ N_SAMPLES = 63  # points checked along every leg
 
 def heights_along(h0, drop, ceil):
     """Altitudes along a glide started at h0, from the height lost between the start and each sample (`drop`,
-    negative where rising air lifted the glider), never above the ceiling: once at cloud base the glider stays
-    there until the air sinks again, h_s = h0 - drop_s - max(0, h0 - ceil - min_{u <= s} drop_u)."""
+    negative where rising air lifted the glider), never above the ceiling (a scalar, or one value per sample):
+    once at cloud base the glider stays there until the air sinks again. Unrolling h_s = min(h_{s-1} - d_s, H_s)
+    gives h_s = min(h0, min_{u <= s} (H_u + drop_u)) - drop_s."""
     h0 = np.asarray(h0, dtype=float)
-    lowest = np.minimum.accumulate(drop, axis=-1)
-    return h0[..., None] - drop - np.maximum(0.0, h0[..., None] - ceil - lowest)
+    return np.minimum(h0[..., None], np.minimum.accumulate(ceil + drop, axis=-1)) - drop
 
 
 @dataclass
 class _Slot:
-    """Hour-long period with a constant ceiling and glide wind."""
+    """Hour-long period with constant ceilings and glide winds."""
 
-    ceil: float
-    wind: np.ndarray  # (2,) m/s at glide altitude
+    ceil: np.ndarray  # (n,) ceiling at each node (m)
+    wind: np.ndarray  # (2,) m/s at glide altitude, at the takeoff
+    wind_legs: np.ndarray  # (n, n, 2) m/s at glide altitude, at the middle of each leg
     t_glide: np.ndarray  # (V, n, n) glide duration (s) per airspeed, inf if impossible
     loss: np.ndarray  # (V, n, n) height lost (m) per airspeed, gliding from the ceiling (>= 0)
     loss_raw: np.ndarray  # (V, n, n) height lost without the ceiling cap (negative: the glide climbs)
@@ -66,19 +70,38 @@ class Planner:
         self, terrain: Terrain, params: Params, takeoff_xy: tuple[float, float], lift: LiftModel, verbose: bool = True
     ):
         self.t, self.p, self.lift, self.verbose = terrain, params, lift, verbose
-        p, w = params, params.weather
+        p = params
+        pts = p.weather_points if len(p.weather_points) > 1 else ()
+        self.weathers = [q.weather for q in pts] or [p.weather]
+        self.point_xy = (
+            np.array(terrain.lonlat_to_xy(np.array([q.lon for q in pts]), np.array([q.lat for q in pts])))
+            if pts
+            else np.zeros((2, 1))
+        )
         t_end = p.t_end
-        if w.overdev_hour is not None:  # storms: everybody must be on the ground
-            t_end = min(t_end, p.from_solar(w.overdev_hour, terrain.lon_mid))
+        for w in self.weathers:
+            if w.overdev_hour is not None:  # storms: everybody must be on the ground
+                t_end = min(t_end, p.from_solar(w.overdev_hour, terrain.lon_mid))
         self.t_end = max(t_end, p.t_start + p.dt_min / 60.0)
         self.n_bins = int(np.ceil((self.t_end - p.t_start) * 60.0 / p.dt_min))
         self.hours = p.t_start + np.arange(self.n_bins + 1) * p.dt_min / 60.0
         self.n_slots = max(1, int(np.ceil(self.t_end - p.t_start)))
         self.slot_hours = p.t_start + np.arange(self.n_slots) + 0.5
-        self.ceil = np.array([w.ceiling(self.solar(h)) for h in self.slot_hours])
+        # (K, S) ceiling of each weather point in each slot
+        self._point_ceil = np.array([[w.ceiling(self.solar(h)) for h in self.slot_hours] for w in self.weathers])
         self._leg_cache: dict[int, tuple] = {}
         self._build_nodes(takeoff_xy)
+        self.node_weights = self.weights_at(self.x, self.y)  # (K, n)
+        self.ceil_nodes = (self.node_weights.T @ self._point_ceil).T  # (S, n) ceiling of every node
+        self.ceil = self.ceil_nodes[:, 0]  # (S,) ceiling at the takeoff
         self._build_slots()
+
+    def weights_at(self, x, y) -> np.ndarray:
+        """Blending weights (K, ...) of the weather points at positions (x, y); all ones with a single weather."""
+        x = np.asarray(x, dtype=float)
+        if len(self.weathers) == 1:
+            return np.ones((1,) + x.shape)
+        return point_weights(self.point_xy[0], self.point_xy[1], x, y)
 
     def _log(self, msg: str) -> None:
         if self.verbose:
@@ -104,7 +127,7 @@ class Planner:
         self.sample_hours, self.fields = sample_hours, fields
         potential = fields.max(axis=0)
         potential += 1e-6 * np.random.default_rng(0).random(potential.shape)  # break ties
-        potential[t.z > self.ceil.max() - p.arrival_margin_m - 50.0] = 0.0
+        potential[t.z > self._point_ceil.max() - p.arrival_margin_m - 50.0] = 0.0
 
         # Local maxima of the daily potential, with a minimum spacing.
         size = 2 * int(p.node_spacing_m / t.dy / 2) + 1
@@ -132,12 +155,13 @@ class Planner:
         self.climb = p.w_ref_ms * self.node_lift - p.polar.circling_sink_ms
         self._log(
             f"[nodes] {self.n - 1} thermal nodes ({self.lift.name} lift), takeoff at "
-            f"{self.zg[0]:.0f} m, ceiling {self.ceil.min():.0f}-{self.ceil.max():.0f} m"
+            f"{self.zg[0]:.0f} m, ceiling {self._point_ceil.min():.0f}-{self._point_ceil.max():.0f} m"
+            + (f" ({len(self.weathers)} weather points)" if len(self.weathers) > 1 else "")
         )
 
     # -- glide graph ----------------------------------------------------------- #
     def _build_slots(self) -> None:
-        t, p, w = self.t, self.p, self.p.weather
+        t, p = self.t, self.p
         dx = self.x[None, :] - self.x[:, None]
         dy = self.y[None, :] - self.y[:, None]
         self.dist = dist = np.hypot(dx, dy)
@@ -156,6 +180,8 @@ class Planner:
         self._along, self._need = along, need
         rows, cols = t.xy_to_rowcol(px, py)
         step = dist[:, :, None] / N_SAMPLES  # length of the leg around each sample (m)
+        self._frac = s  # (S,) position of the samples along a leg
+        mid_w = self.weights_at(0.5 * (self.x[:, None] + self.x[None, :]), 0.5 * (self.y[:, None] + self.y[None, :]))
 
         def neighbours(mask_row, i):
             """Keep the nearest reachable nodes per azimuth sector (`Params.neighbours_per_sector`)."""
@@ -176,9 +202,18 @@ class Planner:
         h_takeoff = float(self.zg[0] + 5.0)  # only the takeoff may start without climbing
         self.slots: list[_Slot] = []
         for k in range(self.n_slots):
-            ceil = float(self.ceil[k])
-            wind = w.wind_vec(0.5 * (ceil + float(self.zg.mean())), self.solar(self.slot_hours[k]))
-            w_par, w_perp = ex * wind[0] + ey * wind[1], ex * wind[1] - ey * wind[0]
+            ceil = self.ceil_nodes[k]  # (n,)
+            ceil_along = self.ceil_along(k)  # (n, n, S)
+            winds = np.array(  # (K, 2): wind of each weather point at glide altitude
+                [
+                    w.wind_vec(0.5 * (float(c) + float(self.zg.mean())), self.solar(self.slot_hours[k]))
+                    for w, c in zip(self.weathers, self._point_ceil[:, k])
+                ]
+            )
+            wind_legs = np.einsum("knm,kc->nmc", mid_w, winds)  # (n, n, 2)
+            wind = self.node_weights[:, 0] @ winds
+            w_par = ex * wind_legs[..., 0] + ey * wind_legs[..., 1]
+            w_perp = ex * wind_legs[..., 1] - ey * wind_legs[..., 0]
             root2 = va**2 - w_perp**2
             vg = w_par + np.sqrt(np.clip(root2, 0, None))  # wind triangle, per airspeed
             valid = (root2 > 0) & (vg > 1.0) & off_diag
@@ -196,19 +231,20 @@ class Planner:
             feas = np.zeros(valid.shape, dtype=bool)
             for v in range(len(p.polar.speeds)):  # altitude along each leg, from the ceiling
                 drop = np.cumsum(self._lose_per_m(v, vmin, vg, w_air, in_lift) * step, axis=2)
-                h = heights_along(np.full((self.n, self.n), ceil), drop, ceil)
+                h = heights_along(np.broadcast_to(ceil[:, None], (self.n, self.n)), drop, ceil_along)
                 feas[v] = valid[v] & (h >= need).all(axis=2) & (h[:, :, -1] >= arrival_need)
-                loss[v] = np.where(valid[v], ceil - h[:, :, -1], np.inf)
+                loss[v] = np.where(valid[v], ceil[:, None] - h[:, :, -1], np.inf)
                 loss_raw[v] = np.where(valid[v], drop[:, :, -1], np.inf)
                 seconds = (np.where(in_lift, 1.0 / vg[vmin][:, :, None], 1.0 / vg[v][:, :, None]) * step).sum(axis=2)
                 t_glide[v] = np.where(valid[v], seconds, np.inf)
             drop0 = np.cumsum(self._lose_per_m(vt, vmin, vg, w_air, in_lift)[0] * step[0], axis=1)
-            h0 = heights_along(np.full(self.n, h_takeoff), drop0, ceil)
+            h0 = heights_along(np.full(self.n, h_takeoff), drop0, ceil_along[0])
             low_ok = valid[vt, 0] & (h0 >= need[0]).all(axis=1) & (h0[:, -1] >= arrival_need[0])
             self.slots.append(
                 _Slot(
                     ceil,
                     wind,
+                    wind_legs,
                     t_glide,
                     loss,
                     loss_raw,
@@ -227,20 +263,27 @@ class Planner:
             f"glide wind {np.hypot(*self.slots[self.n_slots // 2].wind) * 3.6:.0f} km/h"
         )
 
+    def ceil_along(self, slot: int, i=None, j=None) -> np.ndarray:
+        """Ceiling at the samples of the legs (n, n, S), or of the leg i -> j (S,): linear between the nodes."""
+        c = self.ceil_nodes[slot]
+        if i is None:
+            return c[:, None, None] + (c[None, :, None] - c[:, None, None]) * self._frac
+        return c[i] + (c[j] - c[i]) * self._frac
+
     def _legs(self, b: int):
         """Best airspeed per leg for departures during time bin b (cached)."""
         if b not in self._leg_cache:
             s = self.slots[self.slot_of(b)]
             climb = self.climb[b]
             ok = climb >= self.p.min_climb_ms
-            total = np.where(
-                s.feas & ok[None, None, :], s.t_glide + np.where(s.feas, s.loss, 0.0) / np.where(ok, climb, 1.0), np.inf
-            )
+            # climb back in j up to ITS ceiling: the height lost, plus the difference of ceilings (weather points)
+            back = np.maximum(np.where(s.feas, s.loss, 0.0) + (s.ceil[None, :] - s.ceil[:, None])[None], 0.0)
+            total = np.where(s.feas & ok[None, None, :], s.t_glide + back / np.where(ok, climb, 1.0), np.inf)
             vi = total.argmin(axis=0)[None]
             self._leg_cache[b] = (
                 np.take_along_axis(total, vi, 0)[0] / 3600.0,
                 np.take_along_axis(s.t_glide, vi, 0)[0] / 3600.0,
-                s.ceil - np.take_along_axis(s.loss, vi, 0)[0],
+                s.ceil[:, None] - np.take_along_axis(s.loss, vi, 0)[0],
                 ok,
                 vi[0],  # airspeed index of each leg
             )
@@ -258,14 +301,14 @@ class Planner:
         if i == 0 and first and not ok[0]:
             js = s.low0_nbrs[ok[s.low0_nbrs]]
             arrival = self.zg[0] - s.low0_loss[js]
-            total = s.low0_t[js] + (s.ceil - arrival) / self.climb[b, js]
+            total = s.low0_t[js] + (s.ceil[js] - arrival) / self.climb[b, js]
             return js, total / 3600.0, s.low0_t[js] / 3600.0, arrival, float(self.zg[0])
         if not ok[i]:
-            return _EMPTY, _EMPTY, _EMPTY, _EMPTY, s.ceil
+            return _EMPTY, _EMPTY, _EMPTY, _EMPTY, float(s.ceil[i])
         js = s.nbrs[i]
         js = js[np.isfinite(leg_h[i, js])]
-        extra = (s.ceil - self.zg[0]) / self.climb[b, 0] / 3600.0 if (i == 0 and first) else 0.0
-        return js, leg_h[i, js] + extra, glide_h[i, js], arr_alt[i, js], s.ceil
+        extra = (s.ceil[0] - self.zg[0]) / self.climb[b, 0] / 3600.0 if (i == 0 and first) else 0.0
+        return js, leg_h[i, js] + extra, glide_h[i, js], arr_alt[i, js], float(s.ceil[i])
 
     def lift_at(self, x, y, hour: float) -> np.ndarray:
         """Lift index at metric coordinates, from the nearest pre-computed half-hour field."""
@@ -401,7 +444,7 @@ class Planner:
                     glide_h=float(glide_h[hit[0]]),
                     arrival=float(arrival[hit[0]]),
                     start=float(start_alt),
-                    ceil=s.ceil,
+                    ceil=float(s.ceil[i]),
                 )
         return None
 
@@ -415,7 +458,7 @@ class Planner:
             if leg is None:  # should not happen; keep a plausible profile anyway
                 glide_h = 0.5 * (times[k + 1] - times[k])
                 arrival = float(self.zg[j] + p.arrival_margin_m)
-                start_alt = float(self.ceil[self.slot_of(self.bin_floor(times[k]))])
+                start_alt = float(self.ceil_nodes[self.slot_of(self.bin_floor(times[k])), i])
             else:
                 glide_h, arrival, start_alt = leg["glide_h"], leg["arrival"], leg["start"]
             if k == 0 and start_alt > self.zg[0] + 1.0:  # initial climb in the house thermal
@@ -450,8 +493,8 @@ class Planner:
 
     def glide_heights(self, glide: dict) -> np.ndarray:
         """Altitude at each sample of a glide {i, j, v, slot, h0} (S,), never above the ceiling."""
-        s = self.slots[glide["slot"]]
-        return heights_along(glide["h0"], self.leg_drop(glide["i"], glide["j"], glide["v"], glide["slot"]), s.ceil)
+        i, j, slot = glide["i"], glide["j"], glide["slot"]
+        return heights_along(glide["h0"], self.leg_drop(i, j, glide["v"], slot), self.ceil_along(slot, i, j))
 
     def glide_clear(self, glide: dict, tolerance_m: float = 0.01) -> bool:  # 1 cm: float32 terrain
         """True if the glide keeps the terrain clearance all along and the arrival margin."""
@@ -533,13 +576,14 @@ class Planner:
             alt, t = float(self.zg[0]), times[0]
         out_times = [times[0]]
         for k in range(k0, m):
-            cap = float(self.ceil[self.slot_of(self.bin_floor(t))])
+            ceil_k = self.ceil_nodes[:, path[k]]  # ceiling of this thermal, per slot
+            cap = float(ceil_k[self.slot_of(self.bin_floor(t))])
             if need[k] > cap + 1e-6:
                 # arrived before the cloud base is high enough for the next glide: wait for it to rise
-                later = [q for q in range(self.slot_of(self.bin_floor(t)) + 1, self.n_slots) if self.ceil[q] >= need[k]]
+                later = [q for q in range(self.slot_of(self.bin_floor(t)) + 1, self.n_slots) if ceil_k[q] >= need[k]]
                 if not later:
                     return None
-                t, cap = max(t, p.t_start + later[0]), float(self.ceil[later[0]])
+                t, cap = max(t, p.t_start + later[0]), float(ceil_k[later[0]])
             own = price(k, t)
             target = None
             for j in range(k + 1, m + 1):

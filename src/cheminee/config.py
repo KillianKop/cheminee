@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from .domain.polar import GliderPolar
 from .weather.model import Weather
+from .weather.points import WeatherPoint
 
 KMH = 1.0 / 3.6  # km/h -> m/s
 OBJECTIVES = ("triangle", "fai", "free", "score")
@@ -22,6 +23,9 @@ class Params:
     t_end: float = 18.0  # latest landing time
     # Atmosphere and glider
     weather: Weather = field(default_factory=Weather)
+    # Weather at a few points of the area (lon/lat known), blended in between; empty: `weather` everywhere.
+    # `weather` is then the one of the takeoff (first point), used for summaries.
+    weather_points: tuple[WeatherPoint, ...] = ()
     polar: GliderPolar = field(default_factory=GliderPolar)
     # Lift index <-> climb rate: vertical air velocity = w_ref_ms * L
     w_ref_ms: float = 5.0

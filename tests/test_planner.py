@@ -19,7 +19,7 @@ def _check(route, planner, terrain):
     assert route.distance_km > 0 and route.points > 0
     prof = route.profile
     assert np.all(np.diff(prof[:, 3]) >= -1e-9), "profile times must not go back"
-    assert prof[:, 2].max() <= planner.ceil.max() + 1e-6
+    assert prof[:, 2].max() <= planner.ceil_nodes.max() + 1e-6
     assert np.all(prof[:, 2] >= terrain.sample(terrain.z, prof[:, 0], prof[:, 1]) - 1.0)
 
 
@@ -150,7 +150,7 @@ def _clear_of_terrain(route, planner, terrain):
         assert planner.glide_clear(g, tolerance_m=1.0), g
     track = planner.route_track(route)
     assert np.all(track[:, 2] >= terrain.sample(terrain.z, track[:, 0], track[:, 1]) - 1.0)
-    assert np.all(track[:, 2] <= planner.ceil.max() + 1e-6)
+    assert np.all(track[:, 2] <= planner.ceil_nodes.max() + 1e-6)
     assert np.all(np.diff(track[:, 3]) >= -1e-9)
 
 

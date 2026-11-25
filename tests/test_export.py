@@ -1,4 +1,5 @@
 import base64
+import dataclasses
 import json
 from pathlib import Path
 
@@ -8,8 +9,9 @@ from cheminee.config import Params
 from cheminee.export import FORMAT, FORMAT_VERSION, build_flight_package, candidate_routes, write_flight_package
 from cheminee.export.flight_package import merge_short_glides
 from cheminee.lift import HeuristicLift
+from cheminee.lift.points import with_weather_points
 from cheminee.planning import Planner, default_takeoff
-from cheminee.weather import Weather
+from cheminee.weather import Weather, WeatherPoint
 
 SCHEMA = Path(__file__).parents[1] / "schema" / "flight-package.v1.schema.json"
 
@@ -94,3 +96,23 @@ def test_write_and_read_back(package, tmp_path):
     again = json.loads(path.read_text(encoding="utf-8"))
     assert again["routes"][0]["label"] == package["routes"][0]["label"]
     assert again["meta"]["attribution"] == package["meta"]["attribution"]
+
+
+def test_ceiling_of_every_node_with_weather_points(terrain):
+    """Weather points with a low ceiling in the west: `ceilings_m` gives the ceiling of every node of a slot
+    (optional key, only when they differ); `ceiling_m` stays the one of the takeoff."""
+    jsonschema = pytest.importorskip("jsonschema")
+    params = Params(n_nodes=30, node_spacing_m=600.0, weather=Weather(breeze_kmh=0.0))
+    pts = []
+    for fx, fy, kw in [(0.1, 0.5, dict(inversion_alt_m=2200.0)), (0.9, 0.2, {}), (0.9, 0.8, {})]:
+        lon, lat = terrain.xy_to_lonlat(fx * terrain.width, fy * terrain.height)
+        pts.append(WeatherPoint(float(lon), float(lat), Weather(breeze_kmh=0.0, **kw)))
+    params = dataclasses.replace(params, weather=pts[0].weather, weather_points=tuple(pts))
+    lift = with_weather_points(lambda t, p: HeuristicLift(t, p))(terrain, params)
+    planner = Planner(terrain, params, default_takeoff(terrain, params, lift), lift, verbose=False)
+    package = build_flight_package(terrain, params, planner, candidate_routes(planner, n_triangles=1, n_free=1))
+    jsonschema.validate(package, json.loads(SCHEMA.read_text()))
+    slots = package["graph"]["slots"]
+    given = [s for s in slots if "ceilings_m" in s]  # absent when every node has the same ceiling (morning)
+    assert len(given) >= len(slots) // 2
+    assert all(len(s["ceilings_m"]) == len(package["nodes"]) and s["ceiling_m"] == s["ceilings_m"][0] for s in given)

@@ -70,6 +70,11 @@ Segments are contiguous: the end of one is the start of the next, in time and in
 The graph lets the app re-plan a route when the pilot leaves the plan, without network. For each one-hour slot,
 it gives the feasible glides **starting at the ceiling** of the slot.
 
+- `slots[].ceiling_m`: the ceiling at the takeoff. When the weather was taken at several points (takeoff and
+  two points around it, see the README) the ceilings differ from thermal to thermal: `slots[].ceilings_m` then
+  gives the ceiling of every node (optional key, absent when they are all equal), and the glide i → j starts at
+  `ceilings_m[i]`.
+
 - `speeds_kmh`: the three airspeeds considered (trim, intermediate, full bar).
 - `slots[].edges`: rows `[i, j, glide_s, loss_m, glide_s, loss_m, glide_s, loss_m]`, one pair per speed of
   `speeds_kmh`; `-1` when that speed does not clear the terrain with the margin.
@@ -77,8 +82,10 @@ it gives the feasible glides **starting at the ceiling** of the slot.
 - `circling_sink_ms`, `arrival_margin_m`, `clearance_m`: assumptions of the computation.
 
 To estimate the duration of a leg i → j started at the ceiling at time t, add to the glide time the time needed
-to climb back the height lost, in the thermal of j: `glide_s + loss_m / rate(j, t)`, where `rate(j, t)` is read
-from `nodes[j].climb`. This is exactly what cheminee's planner computes.
+to climb back, in the thermal of j, up to its ceiling: `glide_s + max(0, loss_m + c_j - c_i) / rate(j, t)`, where
+`c` is `ceilings_m` (or `ceiling_m` for every node when it is absent: the formula becomes
+`glide_s + loss_m / rate(j, t)`) and `rate(j, t)` is read from `nodes[j].climb`. This is exactly what cheminee's
+planner computes. A reader that ignores `ceilings_m` gets an estimate off by `(c_j - c_i) / rate(j, t)`.
 
 ## Changing the format
 

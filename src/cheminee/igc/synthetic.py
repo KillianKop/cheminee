@@ -91,7 +91,7 @@ class _Flight:
         rate = p.w_ref_ms * lift * rng.lognormal(0, 0.12) - p.polar.circling_sink_ms
         if rate < p.min_climb_ms:
             return False
-        top = pl.slots[pl.slot_of(b)].ceil - rng.uniform(0, 150)
+        top = pl.slots[pl.slot_of(b)].ceil[node] - rng.uniform(0, 150)
         if self.alt >= top - 30:
             return True
         n = max(2, int((top - self.alt) / rate / cfg.fix_interval_s))

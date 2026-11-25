@@ -86,11 +86,33 @@ def test_weather_overrides_and_forecast(app):
     assert hours == sorted(hours)
 
     req = {"preset": "good_day", "forecast": True, "date": "2026-11-15", "takeoff": {"x_km": 3.0, "y_km": 3.0}}
-    fc = app.weather_summary(req)
+    fc = app.weather_summary({**req, "weather_points": 1})
     assert fc["day_of_year"] == 319 and any("Open-Meteo" in s for s in fc["sources"])
     assert fc["weather"]["hourly"], "the forecast must bring hourly series"
-    app.weather_summary(req)
+    assert fc["points"] == []
+    app.weather_summary({**req, "weather_points": 1})
     assert len(app.fetch_calls) == 1, "the same forecast must not be downloaded twice"
+    three = app.weather_summary(req)  # default: the takeoff and two points of a triangle around it
+    assert [q["role"] for q in three["points"]] == ["takeoff", "point 2", "point 3"]
+    assert len(app.fetch_calls) == 3, "one request per new point, the takeoff one is reused"
+    assert sum("Open-Meteo" in s for s in three["sources"]) == 3
+    assert all(set(q["ceiling_m"]) == set(q["wind_aloft"]) and q["ceiling_m"] for q in three["points"])
+
+
+def test_weather_points_placed_by_hand_and_planned(app, terrain):
+    sites = [list(terrain.xy_to_lonlat(1000.0, 6000.0)), list(terrain.xy_to_lonlat(4500.0, 1000.0))]
+    req = {"forecast": True, "date": "2026-11-15", "takeoff": {"x_km": 3.0, "y_km": 3.0}, "weather_sites": sites}
+    summary = app.weather_summary(req)
+    got = [(q["lon"], q["lat"]) for q in summary["points"][1:]]
+    assert np.allclose(got, sites, atol=1e-5)
+    with pytest.raises(RequestError, match="outside"):
+        app.weather_summary({**req, "weather_sites": [[0.0, 0.0], sites[1]]})
+    with pytest.raises(RequestError, match="weather_points"):
+        app.weather_summary({**req, "weather_points": 2})
+    job = _wait(app, app.start_plan({**req, "objective": "free", "n_routes": 1, "t_start": 11, "t_end": 15}))
+    assert job["status"] == "done", job.get("error")
+    result = job["result"]
+    assert len(result["weather_points"]) == 3 and "weather points" in result["lift_name"]
 
 
 @pytest.mark.parametrize(

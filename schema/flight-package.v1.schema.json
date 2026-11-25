@@ -150,7 +150,9 @@
             "required": ["t0", "t1", "ceiling_m", "wind_kmh", "wind_dir_deg", "edges", "takeoff_edges"],
             "properties": {
               "t0": {"type": "number"}, "t1": {"type": "number"},
-              "ceiling_m": {"type": "number"},
+              "ceiling_m": {"type": "number", "description": "Ceiling at the takeoff (node 0)."},
+              "ceilings_m": {"type": "array", "items": {"type": "number"},
+                             "description": "Optional: ceiling of every node (index of nodes), given when the weather was taken at several points and the ceilings differ; glides of edges start at the ceiling of i."},
               "wind_kmh": {"type": "number"}, "wind_dir_deg": {"type": "number"},
               "edges": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}, "minItems": 4},
                         "description": "[i, j, glide_s, loss_m] repeated for each airspeed; -1 when not feasible."},

@@ -8,6 +8,19 @@ The flight package has its own version number (`version` in the JSON, see [docs/
 
 ### Added
 
+- Weather at three points. With a forecast, the planner takes the weather at the takeoff and at two points of a
+  triangle around it (`--weather-points 3`, the default; `--weather-point LON LAT` to place them; web: *Weather
+  points*, draggable markers on the map with their ceiling). Between the points the weather is blended
+  (`weather/points.py`): the lift field of each point weather (`lift/points.py`, for any lift model), a ceiling
+  per thermal node, a wind per glide; the leg cost climbs back to the ceiling of the arrival node. A single
+  weather gives exactly the former results.
+- `fetch-weather` takes the weather of each IGC flight at three points of it (`igc/sites.py`: turnpoints of a
+  triangle, or start / middle / farthest point), positions rounded to 0.02° and requests shared by the flights
+  of the same day and place; the `.weather.json` file then holds the points and the source (`save_points`;
+  files with one `Weather` are still read). Training gives each sample the weather of the nearest point.
+- Flight package (still version 1): optional `graph.slots[].ceilings_m`, the ceiling of every node when the
+  weather points give different ceilings; `ceiling_m` is the one of the takeoff. Readers that ignore it get leg
+  durations off by the difference of ceilings divided by the climb rate.
 - `data/dem/cop30/` for your own larger Copernicus DEM extracts (ignored by git, see `data/dem/README.md`).
 - `data/igc/` for your own IGC tracks and `models/local/` for the networks trained on them, both ignored by
   git (only `data/igc/README.md` is versioned); `*.igc` is now ignored everywhere in the repository.
@@ -38,6 +51,8 @@ The flight package has its own version number (`version` in the JSON, see [docs/
 
 ### Changed
 
+- `cheminee plan / export --forecast` takes the forecast at the takeoff when one is given (it was the centre of
+  the map), and at three points by default.
 - The sample DEM moved to `data/dem/sample/`: extract it with
   `tar -xzf data/dem/sample/rasters_COP30_sample.tar.gz -C data/dem/sample/`, then use
   `data/dem/sample/output_hh.asc`.

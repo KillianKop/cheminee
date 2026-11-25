@@ -122,7 +122,8 @@ def _glide_airspeed(pl: Planner, a: int, b: int, t0: float, loss: float) -> floa
     p, slot = pl.p, pl.slots[pl.slot_of(pl.bin_floor(t0))]
     d = pl.dist[a, b]
     e = np.array([pl.x[b] - pl.x[a], pl.y[b] - pl.y[a]]) / max(d, 1.0)
-    w_par, w_perp = float(e @ slot.wind), float(e[0] * slot.wind[1] - e[1] * slot.wind[0])
+    wind = slot.wind_legs[a, b]
+    w_par, w_perp = float(e @ wind), float(e[0] * wind[1] - e[1] * wind[0])
     best, best_err = p.polar.trim_kmh, np.inf
     for v in p.polar.speeds:
         root = v**2 - w_perp**2
@@ -270,7 +271,8 @@ def routing_graph(pl: Planner) -> dict:
             dict(
                 t0=round(float(pl.p.t_start + k), 3),
                 t1=round(float(min(pl.p.t_start + k + 1, pl.t_end)), 3),
-                ceiling_m=round(slot.ceil),
+                ceiling_m=round(float(slot.ceil[0])),
+                **({"ceilings_m": [round(float(c)) for c in slot.ceil]} if np.ptp(slot.ceil) >= 1.0 else {}),
                 wind_kmh=round(float(np.hypot(*wind) * 3.6), 1),
                 wind_dir_deg=round(float(np.degrees(np.arctan2(-wind[0], -wind[1])) % 360)),
                 edges=edges,

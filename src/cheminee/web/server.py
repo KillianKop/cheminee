@@ -209,7 +209,9 @@ class WebApp:
         lift_choices: dict[str, LiftChoice] | None = None,
     ):
         """`fetch_payload(lat, lon, date, model) -> dict` downloads an Open-Meteo answer (None: forecasts off)."""
-        self.t, self.lift_factory = terrain, lift_factory
+        from ..lift.points import with_weather_points
+
+        self.t, self.lift_factory = terrain, with_weather_points(lift_factory)  # honours Params.weather_points
         self.base_params = base_params or Params()
         self.fetch_payload = fetch_payload
         self.dem_name = dem_name
@@ -299,6 +301,7 @@ class WebApp:
                 n_routes=p.n_routes,
                 glide_lift=p.glide_lift_efficiency,
                 forecast_model="meteofrance_seamless",
+                weather_points=3,
             ),
         )
 
@@ -369,39 +372,79 @@ class WebApp:
         except ValueError:
             raise RequestError(f"date: expected YYYY-MM-DD, got {req['date']!r}") from None
 
-    def resolve_weather(self, req: dict) -> tuple[Weather, list[str]]:
-        """Preset, then forecast (optional), then explicit values: the same order as the command line."""
+    def weather_sites(self, req: dict) -> list[tuple[float, float, str]]:
+        """(x, y, role) of the weather points: the takeoff (or the DEM centre) and, with "weather_points": 3
+        (the default), two points of a triangle around it, automatic or given as "weather_sites": [[lon, lat], ...]."""
+        from ..planning.sites import weather_sites
+
+        xy = self.takeoff_xy(req)
+        anchor = xy or (0.5 * self.t.width, 0.5 * self.t.height)
+        n = int(_number(req, "weather_points", 1, 3, 3))
+        if n not in (1, 3):
+            raise RequestError("weather_points: 1 or 3")
+        role = "takeoff" if xy else "map centre"
+        if n == 1:
+            return [(anchor[0], anchor[1], role)]
+        manual = []
+        for k, site in enumerate(req.get("weather_sites") or []):
+            if not isinstance(site, (list, tuple)) or len(site) != 2:
+                raise RequestError("weather_sites: expected [[lon, lat], [lon, lat]]")
+            pt = {"lon": site[0], "lat": site[1]}
+            x, y = self.t.lonlat_to_xy(_number(pt, "lon", -180, 180), _number(pt, "lat", -90, 90))
+            if not self.t.contains(x, y):
+                raise RequestError(f"weather_sites: point {k + 2} is outside the DEM")
+            manual.append((float(x), float(y)))
+        return weather_sites(self.t, anchor, manual or None, role)
+
+    def _forecast(self, req: dict, lon: float, lat: float, base: Weather) -> tuple[Weather, str]:
+        """Open-Meteo forecast of the request at one place (answers cached: request counts stay low)."""
+        date = self._date(req)
+        if date is None:
+            raise RequestError("forecast: needs a date")
+        if self.fetch_payload is None:
+            raise RequestError("forecast: disabled on this server")
+        from ..weather import openmeteo
+
+        model = str(req.get("forecast_model") or openmeteo.DEFAULT_MODEL)
+        if model not in openmeteo.FORECAST_MODELS:
+            raise RequestError(f"forecast_model: unknown {model!r} (known: {', '.join(openmeteo.FORECAST_MODELS)})")
+        key = (date.isoformat(), model, round(float(lat), 2), round(float(lon), 2))
+        if key not in self._payloads:
+            try:
+                self._payloads[key] = self.fetch_payload(float(lat), float(lon), date, model)
+            except Exception as exc:  # network, HTTP error, bad model name
+                raise RequestError(f"forecast: Open-Meteo request failed ({exc})") from None
+        try:
+            weather = openmeteo.weather_from_payload(self._payloads[key], float(lon), base)
+        except openmeteo.ForecastUnavailable as exc:
+            error = RequestError(f"forecast: {openmeteo.FORECAST_MODELS[model][0]}: {exc}")
+            error.short = f"covers {exc.covered}/{exc.total} flying hours (beyond its range?)"
+            raise error from None
+        return weather, f"Open-Meteo {model} {date.isoformat()} at {float(lat):.3f}, {float(lon):.3f}"
+
+    def resolve_weather(self, req: dict) -> tuple[Weather, list[str], tuple]:
+        """Preset, then forecast (optional), then explicit values: the same order as the command line.
+
+        Returns (weather of the takeoff, sources, weather points). With a forecast and "weather_points": 3 (the
+        default) the forecast is taken at three points (`weather_sites`); explicit values apply to all of them.
+        Without a forecast the weather is the same everywhere: no weather points."""
+        from ..weather import WeatherPoint
+
         preset = req.get("preset", "good_day")
         if preset not in PRESETS:
             raise RequestError(f"preset: unknown {preset!r} (known: {', '.join(PRESETS)})")
-        weather = Weather.from_dict(PRESETS[preset].to_dict())
+        base = Weather.from_dict(PRESETS[preset].to_dict())
         sources = [f"preset {preset}"]
-        if req.get("forecast"):
-            date = self._date(req)
-            if date is None:
-                raise RequestError("forecast: needs a date")
-            if self.fetch_payload is None:
-                raise RequestError("forecast: disabled on this server")
-            from ..weather import openmeteo
-
-            xy = self.takeoff_xy(req)
-            lon, lat = self.t.xy_to_lonlat(*xy) if xy else (self.t.lon_mid, self.t.lat_mid)
-            model = str(req.get("forecast_model") or openmeteo.DEFAULT_MODEL)
-            if model not in openmeteo.FORECAST_MODELS:
-                raise RequestError(f"forecast_model: unknown {model!r} (known: {', '.join(openmeteo.FORECAST_MODELS)})")
-            key = (date.isoformat(), model, round(float(lat), 2), round(float(lon), 2))
-            if key not in self._payloads:
-                try:
-                    self._payloads[key] = self.fetch_payload(float(lat), float(lon), date, model)
-                except Exception as exc:  # network, HTTP error, bad model name
-                    raise RequestError(f"forecast: Open-Meteo request failed ({exc})") from None
-            try:
-                weather = openmeteo.weather_from_payload(self._payloads[key], float(lon), weather)
-            except openmeteo.ForecastUnavailable as exc:
-                error = RequestError(f"forecast: {openmeteo.FORECAST_MODELS[model][0]}: {exc}")
-                error.short = f"covers {exc.covered}/{exc.total} flying hours (beyond its range?)"
-                raise error from None
-            sources.append(f"Open-Meteo {model} {date.isoformat()} at {float(lat):.3f}, {float(lon):.3f}")
+        sites = self.weather_sites(req) if req.get("forecast") else [(0.5 * self.t.width, 0.5 * self.t.height, "")]
+        weathers = []
+        for x, y, role in sites:
+            if req.get("forecast"):
+                lon, lat = (float(v) for v in self.t.xy_to_lonlat(x, y))
+                weather, source = self._forecast(req, lon, lat, Weather.from_dict(base.to_dict()))
+                sources.append(source + (f" ({role})" if len(sites) > 1 else ""))
+            else:
+                weather = Weather.from_dict(base.to_dict())
+            weathers.append(weather)
         overrides = req.get("weather") or {}
         for name, value in overrides.items():
             if name not in WEATHER_FIELDS:
@@ -409,12 +452,21 @@ class WebApp:
             _, _, lo, hi, _ = WEATHER_FIELDS[name]
             value = _number(overrides, name, lo, hi)
             if value is not None:
-                weather.override(name, value)
+                for weather in weathers:
+                    weather.override(name, value)
                 sources.append(f"{name}={value:g}")
-        weather.cast_shadows = bool(req.get("shadows", weather.cast_shadows))
-        return weather, sources
+        for weather in weathers:
+            weather.cast_shadows = bool(req.get("shadows", weather.cast_shadows))
+        points = ()
+        if len(sites) > 1:
+            lonlat = [tuple(float(v) for v in self.t.xy_to_lonlat(x, y)) for x, y, _ in sites]
+            points = tuple(
+                WeatherPoint(round(lon, 5), round(lat, 5), w, role)
+                for (lon, lat), w, (_, _, role) in zip(lonlat, weathers, sites)
+            )
+        return weathers[0], sources, points
 
-    def params(self, req: dict, weather: Weather) -> Params:
+    def params(self, req: dict, weather: Weather, points: tuple = ()) -> Params:
         p = self.base_params
         date = self._date(req)
         day = date.timetuple().tm_yday if date else int(_number(req, "day_of_year", 1, 366, p.day_of_year))
@@ -432,6 +484,7 @@ class WebApp:
             t_start=t_start,
             t_end=t_end,
             weather=weather,
+            weather_points=points,
             objective=objective,
             n_routes=int(_number(req, "n_routes", 1, 10, p.n_routes)),
             glide_lift_efficiency=_number(req, "glide_lift", 0.0, 1.0, p.glide_lift_efficiency),
@@ -439,8 +492,8 @@ class WebApp:
 
     # -- weather preview ----------------------------------------------------------------- #
     def weather_summary(self, req: dict) -> dict:
-        weather, sources = self.resolve_weather(req)
-        p, lon = self.params(req, weather), self.t.lon_mid
+        weather, sources, points = self.resolve_weather(req)
+        p, lon = self.params(req, weather, points), self.t.lon_mid
         rows = []
         for hour in np.arange(np.floor(p.t_start) - 1, np.ceil(p.t_end) + 1):
             s = p.to_solar(float(hour), lon)
@@ -460,7 +513,28 @@ class WebApp:
                     breeze_kmh=round(weather.breeze_ms(s) * 3.6, 1),
                 )
             )
-        return dict(sources=sources, day_of_year=p.day_of_year, hours=rows, weather=weather.to_dict())
+        return dict(
+            sources=sources,
+            day_of_year=p.day_of_year,
+            hours=rows,
+            weather=weather.to_dict(),
+            points=self._points_summary(p),
+        )
+
+    def _points_summary(self, p: Params, hours=None) -> list[dict]:
+        """Weather points for the map: position, role, ceiling and wind aloft per hour."""
+        if hours is None:
+            hours = np.arange(np.ceil(p.t_start), np.floor(p.t_end) + 1e-6, 1.0)
+        out = []
+        for q in p.weather_points:
+            ceiling, wind = {}, {}
+            for hour in hours:
+                s = p.to_solar(float(hour), self.t.lon_mid)
+                ceiling[f"{float(hour):g}"] = round(q.weather.ceiling(s))
+                direction, speed = _wind_from(q.weather.wind_vec(q.weather.wind_aloft_alt_m, s))
+                wind[f"{float(hour):g}"] = [round(direction), round(speed)]
+            out.append(dict(lon=q.lon, lat=q.lat, role=q.role, ceiling_m=ceiling, wind_aloft=wind))
+        return out
 
     def compare_models(self, req: dict) -> dict:
         """Weather of the request with every forecast model, side by side (one Open-Meteo request per model,
@@ -476,7 +550,8 @@ class WebApp:
             label, grid, days, levels, short = FORECAST_MODELS[model]
             row = dict(id=model, label=label, grid_km=grid, range_days=days, levels=levels, short=short)
             try:
-                summary = self.weather_summary({**req, "forecast": True, "forecast_model": model})
+                # at the takeoff only: one request per model
+                summary = self.weather_summary({**req, "forecast": True, "forecast_model": model, "weather_points": 1})
             except RequestError as exc:
                 return {**row, "ok": False, "error": getattr(exc, "short", str(exc).split(": ", 2)[-1])}
             hours = summary["hours"]
@@ -526,7 +601,10 @@ class WebApp:
     @staticmethod
     def _lift_key(params: Params, spec: dict) -> str:
         """Everything the lift fields depend on: lift model, weather, day, time zone (not the takeoff or window)."""
-        return json.dumps([spec, params.weather.to_dict(), params.day_of_year, params.utc_offset], sort_keys=True)
+        points = [q.to_dict() for q in params.weather_points]
+        return json.dumps(
+            [spec, params.weather.to_dict(), points, params.day_of_year, params.utc_offset], sort_keys=True
+        )
 
     def _cached_lift(self, params: Params, spec: dict) -> _CachedLift:
         key = self._lift_key(params, spec)
@@ -539,8 +617,8 @@ class WebApp:
         return self._lifts[key]
 
     def start_plan(self, req: dict) -> str:
-        weather, sources = self.resolve_weather(req)  # validate before queuing: errors go back as HTTP 400
-        params = self.params(req, weather)
+        weather, sources, points = self.resolve_weather(req)  # validate before queuing: errors go back as HTTP 400
+        params = self.params(req, weather, points)
         takeoff = self.takeoff_xy(req)
         spec = self.lift_spec(req)
         job_id = uuid.uuid4().hex[:12]
@@ -677,6 +755,7 @@ class WebApp:
                 climb_ms=np.round(planner.climb[:, 1:].max(axis=0), 1),
             ),
             ceiling=dict(hours=planner.slot_hours, m=np.round(planner.ceil).astype(int)),
+            weather_points=self._points_summary(params),
             lift=dict(  # integers in hundredths: float32 values would print as 0.27000001072883606 in JSON
                 hours=planner.sample_hours[hourly],
                 scale=0.01,
