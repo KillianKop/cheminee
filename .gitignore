@@ -25,3 +25,4 @@ forecast.json
 .vscode/
 .idea/
 .DS_Store
+.env
