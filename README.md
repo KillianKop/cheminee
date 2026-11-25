@@ -28,7 +28,7 @@ Python 3.10 or later.
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 tar -xzf data/rasters_COP30_sample.tar.gz -C data/     # sample DEM -> data/output_hh.asc
-pytest                                                 # 64 tests, about 15 s
+pytest                                                 # 65 tests, about 15 s
 cheminee serve data/output_hh.asc --open               # web interface (3D map) on http://127.0.0.1:8765
 cheminee gui data/output_hh.asc                        # 2D interface
 ```
@@ -118,6 +118,14 @@ open the URL printed by the command in a browser, save the answer and pass it wi
 | `fai` | triangle whose shortest side is at least 28 % of the perimeter | 1.4 |
 | `free` | free distance via 3 turnpoints (open, 4 legs) | 1.0 |
 | `score` | the three kinds ranked together by points | |
+
+How the pilot flies a route (`docs/model.md` § 5.2): climbs only what the next glides need, in the best
+thermals, crosses weak ones without circling, slows down to minimum sink in lift zones met on a glide and
+ends with a final glide at the safety margin.
+
+| Parameter (`Params`) | Option | Effect |
+|---|---|---|
+| `glide_lift_efficiency` | `--glide-lift` (web: *Lift on glides*) | share of the thermal core speed met gliding straight through lift zones (default 0.5; 0 = still air on glides) |
 
 ### Web interface
 

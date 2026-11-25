@@ -19,9 +19,17 @@ The flight package has its own version number (`version` in the JSON, see [docs/
   range, vertical profile); the web interface offers them in a menu, warns when the date is beyond the range
   and compares them all for a date (`POST /api/weather/compare`, one cached request per model).
 
+- Planner: rising air on glides. In the lift zones met along a glide (working ridge, line of thermals) the
+  pilot slows down to minimum sink and the air lifts the glider (`Params.glide_lift_efficiency`, option
+  `--glide-lift`, web *Lift on glides*; 0.5 by default): glides lose less height and can gain some, never above
+  the ceiling. Terrain clearance is checked on the real altitude curve, which the 3D track now shows. Sample
+  DEM, June: free distance 87 -> 90 km, 13.2 -> 14.6 km/h, 25 -> 21 climbs.
+- Flight package (still version 1): a glide segment can gain height, its `sink_ms` is then negative and
+  `a1 > a0` (schema description and doc updated; readers must not assume that glides go down). Heights lost
+  in the routing graph stay `>= 0`.
 - Planner: climbs shared out like a pilot (`Params.partial_climbs`): climb only what is needed to reach a
-  stronger thermal or the goal, cross weak thermals without circling (with the height gained in their core,
-  `dolphin_core_m`), wait for a thermal that does not work yet, final glide at the safety margin. The search
+  stronger thermal or the goal, cross weak thermals without circling, wait for a thermal (or a cloud base)
+  that is not ready yet, final glide at the safety margin. The search
   keeps 3 neighbours per sector instead of 2 (`neighbours_per_sector`) to skip weak thermals. Sample DEM: June
   triangle 3.9 -> 3.3 h (14.9 -> 17.5 km/h), June free distance 80 -> 87 km, 27 November triangle 17 -> 24 km.
 

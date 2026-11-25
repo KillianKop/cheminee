@@ -178,6 +178,16 @@ keep 60 m of clearance above the terrain along the whole glide (started at the c
 120 m above $b$. This is MacCready's reasoning: fly faster when the next thermal is strong, and into the wind.
 The mean speed of the flight is therefore no longer a parameter: it is a result.
 
+**Rising air on the glide.** The glide is followed at 63 points. Where the lift field is above the usable
+threshold ($L \ge L_{min}$: a working ridge, a line of thermals) the air rises at
+$w = \eta\, w_{ref}\, L$, with $\eta$ = `glide_lift_efficiency` (0.5: flying straight, the glider meets about
+half the speed of a thermal core), and the pilot slows down to minimum sink, as MacCready says to do in rising
+air. Elsewhere the air is taken as still and the glide is flown at $v$. The height lost from the start to each
+point, and the time, are summed point by point; the altitude can go up where $w$ exceeds the minimum sink, never
+above the ceiling: $h_s = h_0 - \delta_s - \max(0,\ h_0 - H - \min_{u \le s} \delta_u)$, with $\delta_s$ the
+height lost up to point $s$. Clearance and arrival margin are checked on that curve, and the 3D track shows it.
+`--glide-lift 0` gives still air on every glide.
+
 **Climbing like a pilot.** The search climbs back to the ceiling in every thermal: it keeps the graph small
 (one state per node and time) and gives each leg the MacCready cost above. Once a route is chosen, its climbs
 are shared out along it (`Params.partial_climbs`, on by default), with the greedy rule of the "gas station
@@ -185,14 +195,14 @@ problem": altitude is fuel and a metre climbed at node $k$ costs $1 / c_k$ secon
 
 - In a thermal, if a stronger thermal further on, or the goal, can be reached without climbing above the
   ceiling, the pilot climbs just enough to reach it; otherwise they climb to the ceiling.
-- A thermal not worth circling is crossed in a straight line. Crossing its core still gains
-  $w \cdot D / v_{gnd}$ metres, with $w$ the rising air speed and $D$ = `dolphin_core_m` (150 m): dolphin
-  flying.
-- A thermal reached before it works (the day is still building) is waited for, hanging on in weak lift.
+- A thermal not worth circling is crossed in a straight line, with the rising air it gives on the way (see
+  above): dolphin flying.
+- A thermal reached before it works (the day is still building), or before the cloud base is high enough for
+  the next glide, is waited for, hanging on in weak lift.
 - The last climb stops at the height the final glide needs, and the flight ends on arrival.
 
-Every departure height respects the terrain clearance along the whole glide, $h \ge \text{terrain}(x) +
-\text{clearance} + f \cdot \text{loss}$ at the fraction $f$ of the leg, and the arrival margin. The rule is
+Every departure height respects the terrain clearance along the whole glide (on its real altitude curve,
+rising air included) and the arrival margin. The rule is
 optimal for climb rates that do not change with time; the timeline is then recomputed with the rates of the
 actual arrival times, and the full-climb plan is kept if the shared one is not faster. The search also keeps 3
 neighbours per azimuth sector (`Params.neighbours_per_sector`), so that long glides skipping weak thermals are
