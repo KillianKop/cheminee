@@ -28,7 +28,7 @@ Python 3.10 or later.
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 tar -xzf data/dem/sample/rasters_COP30_sample.tar.gz -C data/dem/sample/   # sample DEM -> output_hh.asc
-pytest                                                 # 66 tests, about 15 s
+pytest                                                 # 79 tests, about 20 s
 cheminee serve data/dem/sample/output_hh.asc --open    # web interface (3D map) on http://127.0.0.1:8765
 cheminee gui data/dem/sample/output_hh.asc             # 2D interface
 ```
@@ -110,6 +110,21 @@ This emagram comes from a real API answer for Digne-les-Bains on 15 November 202
 only two pressure levels): cloud base around 900 m, so no cross-country flight that day. Without Internet access,
 open the URL printed by the command in a browser, save the answer and pass it with `--forecast-json`.
 
+**Weather at three points.** A cross crosses tens of kilometres: the ceiling and the wind are not the same at
+the takeoff and at the far turnpoint. With `--forecast`, the forecast is taken at the takeoff (the map centre
+when the takeoff is automatic) and at two points forming a triangle with it, inside the map (sides up to 20 km).
+Each thermal climbs to its own ceiling and each glide has its own wind, blended between the points
+([docs/model.md](docs/model.md) § 5.1). Three Open-Meteo requests instead of one.
+
+| Option | Effect |
+|---|---|
+| `--weather-points 3` (default) / `1` | forecast at three points, or at the takeoff only |
+| `--weather-point LON LAT` | place point 2 (and, given twice, point 3) yourself |
+
+The web interface shows the points on the map after *Preview the weather* or a plan, with their ceiling at
+14 h; drag points 2 and 3 to move them (*Weather points* selects 3 or 1). The 2D GUI keeps the weather of the
+takeoff only, since its sliders change one weather.
+
 ### Route kinds
 
 | `--objective` | Route | Coefficient |
@@ -190,10 +205,14 @@ cheminee serve $DEM --model models/local/thermal_net.pt
 Put your tracks in `data/igc/` (sub-folders allowed, see [data/igc/README.md](data/igc/README.md)) and the
 network learnt from them in `models/local/`: both are ignored by git.
 
-Each `flight.igc` can come with a `flight.weather.json` (a serialised `Weather`). Météo-France archives at
-Open-Meteo start in September 2022. Without a weather file, the weather of the flight is estimated from the
-track: wind from the drift of the thermals, ceiling from the highest altitude, the rest left at defaults (the
-network then learns nothing about cloud cover or instability).
+Each `flight.igc` can come with a `flight.weather.json`. `fetch-weather` takes the weather at three points of
+the flight: the turnpoints of a triangle, or the takeoff, the middle and the farthest point of a straight or
+out-and-return cross. Each thermal of the flight is then learnt with the weather of the nearest point. The
+positions sent to Open-Meteo are rounded to 0.02° (about 2 km) and shared by the flights of the same day and
+place, so the requests do not give your exact routes away. Older files holding a single `Weather` are still
+read. Météo-France archives at Open-Meteo start in September 2022. Without a weather file, the weather of the
+flight is estimated from the track: wind from the drift of the thermals, ceiling from the highest altitude, the
+rest left at defaults (the network then learns nothing about cloud cover or instability).
 
 Without real tracks, the pipeline runs on synthetic ones:
 

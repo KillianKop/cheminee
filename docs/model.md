@@ -127,9 +127,13 @@ that is, directly a lift index.
   50 m of gain and a ground track that turns (at least 3°/s on average). A straight climb in rising air is not
   a thermal: it counts as a low glide.
 - The thermal is attributed to its entry point, because the column drifts with the wind during the climb.
-- **Flight weather**: read from `flight.weather.json` when it exists (`cheminee fetch-weather` creates it from
-  forecast archives, at the place and date of takeoff); otherwise the wind is estimated from the drift of the
-  thermals, the ceiling from the highest altitude reached, and the rest is left at defaults.
+- **Flight weather**: read from `flight.weather.json` when it exists; otherwise the wind is estimated from the
+  drift of the thermals, the ceiling from the highest altitude reached, and the rest is left at defaults.
+  `cheminee fetch-weather` creates the file from forecast archives, at three points of the flight
+  (`igc/sites.py`): the three fixes forming the largest triangle (the turnpoints of a triangle flight), or, when
+  that triangle is flat (area below 10 % of the equilateral triangle of the same perimeter), the takeoff, the
+  farthest fix and the fix closest to the middle of the two. Each sample takes the weather of the **nearest**
+  point. Positions are rounded to 0.02° before the request.
 
 ### 4.3 Input features (`lift/features.py`)
 
@@ -161,6 +165,23 @@ $$c_k(t) = w_{ref}\,L_k(t) - w_{circ}$$
 where $w_{circ}$ is the sink rate of the glider while circling (1.3 m/s). A node is usable when
 $c_k \ge 0.5$ m/s. The day is cut into one-hour slots; within a slot the ceiling $H$ and the glide wind (taken
 half-way between the ceiling and the nodes) are constant.
+
+**Weather at several points** (`Params.weather_points`, `weather/points.py`). With a forecast the weather is
+taken at $K = 3$ points $P_k$: the takeoff and two points forming a triangle with it (`planning/sites.py`).
+Between them it is blended with smooth inverse-distance weights
+
+$$\omega_k(x) = \frac{1 / (d_k(x)^2 + L^2)}{\sum_m 1 / (d_m(x)^2 + L^2)}, \qquad L = 2 \text{ km},$$
+
+so that each point rules around it and the weights sum to 1. Then:
+- the lift field is $\sum_k \omega_k\, L^{(k)}(x, t)$, where $L^{(k)}$ is the lift model under the weather of
+  point $k$ (`lift/points.py`, for any lift model);
+- node $i$ climbs to its own ceiling $H_i = \sum_k \omega_k(x_i)\, H^{(k)}$; along a glide the ceiling goes
+  linearly from $H_i$ to $H_j$;
+- the wind of a glide is blended at the middle of the leg;
+- the leg cost climbs back in $j$ up to $H_j$: $\max(0,\ \text{loss} + H_j - H_i) / c_j$;
+- a storm at any point ends the day for all.
+
+With a single weather the weights are all 1 and nothing changes.
 
 ### 5.2 Speed to fly on a glide
 
@@ -292,7 +313,8 @@ What these numbers say:
 
 - Train on real tracks, with the weather of each flight taken from a reanalysis.
 - Land cover (forest, rock, meadow) as terrain features.
-- Horizontally varying wind (valley channelling, convergence).
+- Horizontally varying wind at a finer scale than the three weather points (valley channelling, convergence).
+- Weather points that follow the route being searched, or a regular grid of forecasts over the map.
 - Airspace and landing fields as optimiser constraints.
 - Altitude as a state of the search itself (the climbs are only shared out after the search today), and
   climb rates that weaken near the top of the thermal.
