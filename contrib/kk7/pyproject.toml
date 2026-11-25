@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cheminee-kk7"
+version = "0.1.0"
+description = "Optional cheminee add-on: thermal.kk7.ch climatology blended into the lift model."
+readme = "README.md"
+license = "MIT"  # the code; kk7 data are CC BY-NC-SA 4.0 and are never bundled
+requires-python = ">=3.10"
+# cheminee itself is not listed on purpose: install it from the parent checkout first (`pip install -e .`),
+# so pip never looks for a package of that name on PyPI.
+dependencies = ["numpy>=1.24", "scipy>=1.10", "matplotlib>=3.7", "pillow>=9.0"]
+
+[project.scripts]
+cheminee-kk7 = "cheminee_kk7.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
