@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import glob
 import os
 
 from .config import OBJECTIVES, Params
@@ -259,12 +258,11 @@ def cmd_sounding(args) -> None:
 def cmd_fetch_weather(args) -> None:
     """Download the archived weather of each IGC flight and write its `.weather.json` sidecar."""
     import time
-    from pathlib import Path
 
-    from .igc import read_igc
+    from .igc import find_igc, read_igc
     from .weather import openmeteo
 
-    paths = sorted(Path(args.igc_dir).rglob("*.igc")) + sorted(Path(args.igc_dir).rglob("*.IGC"))
+    paths = find_igc(args.igc_dir)
     done = 0
     for path in paths:
         sidecar = path.with_suffix(".weather.json")
@@ -326,12 +324,11 @@ def cmd_synth(args) -> None:
 
 def cmd_train(args) -> None:
     from .domain import Terrain
+    from .igc import find_igc
     from .training import TrainConfig, build_dataset, train
     from .training.train import plot_report
 
-    paths = sorted(
-        glob.glob(f"{args.igc_dir}/**/*.igc", recursive=True) + glob.glob(f"{args.igc_dir}/**/*.IGC", recursive=True)
-    )
+    paths = find_igc(args.igc_dir)
     if not paths:
         raise SystemExit(f"No IGC file found in {args.igc_dir}")
     dataset = build_dataset(Terrain.from_asc(args.dem), paths)

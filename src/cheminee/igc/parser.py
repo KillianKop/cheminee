@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
@@ -13,6 +14,17 @@ _B_RECORD = re.compile(
     r"(-\d{4}|\d{5})(-\d{4}|\d{5})"
 )
 _DATE = re.compile(r"^HFDTE(?:DATE:)?(\d{2})(\d{2})(\d{2})")
+
+
+def find_igc(directory: str | Path) -> list[Path]:
+    """IGC files under `directory` (sub-folders included, `.igc` in any case), sorted, each listed once.
+
+    Globbing `*.igc` then `*.IGC` lists every file twice on case-insensitive file systems (Windows, macOS).
+    """
+    root = Path(directory)
+    if not root.is_dir():
+        return []
+    return sorted(p for p in root.rglob("*") if p.suffix.lower() == ".igc" and p.is_file())
 
 
 @dataclass

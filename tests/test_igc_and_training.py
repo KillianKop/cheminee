@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from cheminee.config import Params
-from cheminee.igc import detect_thermals, estimate_wind, read_igc, synthetic, write_igc
+from cheminee.igc import detect_thermals, estimate_wind, find_igc, read_igc, synthetic, write_igc
 from cheminee.lift import features as ft
 from cheminee.lift.neural import NeuralLift, load_checkpoint
 from cheminee.training import TrainConfig, build_dataset, train
@@ -69,3 +69,14 @@ def test_training_pipeline_end_to_end(terrain, igc_dir, tmp_path):
     net, meta = load_checkpoint(str(ckpt))
     field = NeuralLift(terrain, Params(), net).field(14.0)
     assert field.shape == terrain.z.shape and 0.0 <= field.min() and field.max() <= 1.0
+
+
+def test_find_igc_lists_each_file_once(tmp_path):
+    # *.igc and *.IGC match the same files on Windows / macOS: each flight must still be listed once
+    (tmp_path / "2024").mkdir()
+    for name in ("a.igc", "2024/b.IGC", "2024/c.Igc"):
+        (tmp_path / name).write_text("")
+    (tmp_path / "a.weather.json").write_text("{}")
+    found = find_igc(tmp_path)
+    assert [p.name for p in found] == ["b.IGC", "c.Igc", "a.igc"]
+    assert find_igc(tmp_path / "missing") == []
