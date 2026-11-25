@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cheminee</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<aside id="panel">
+  <header>
+    <h1>cheminee <span id="dem-name"></span></h1>
+    <p class="warning">Prototype flight aid. Routes are not validated: never fly them without your own judgement.</p>
+  </header>
+
+  <section>
+    <h2><span class="step">1</span> Takeoff</h2>
+    <p id="takeoff-info" class="hint">Click on the terrain to place the takeoff. Without one, the planner picks a high
+      spot with good lift.</p>
+    <button id="btn-clear-takeoff" class="secondary" hidden>Let the planner choose</button>
+  </section>
+
+  <section>
+    <h2><span class="step">2</span> Day</h2>
+    <div class="grid2">
+      <label>Date <input type="date" id="date"></label>
+      <label>UTC offset (h) <input type="number" id="utc_offset" step="0.5" min="-12" max="14"></label>
+      <label>Takeoff after (h) <input type="number" id="t_start" step="0.25" min="6" max="20"></label>
+      <label>Land before (h) <input type="number" id="t_end" step="0.25" min="7" max="22"></label>
+    </div>
+    <p class="hint" id="date-hint">Empty date: day <span id="default-day"></span> of the year.</p>
+  </section>
+
+  <section>
+    <h2><span class="step">3</span> Weather</h2>
+    <div class="grid2">
+      <label>Preset <select id="preset"></select></label>
+      <label>Forecast model <input id="forecast_model" list="models"></label>
+    </div>
+    <datalist id="models">
+      <option value="meteofrance_seamless"><option value="meteofrance_arome_france_hd">
+      <option value="icon_seamless"><option value="ecmwf_ifs025"><option value="gfs_seamless">
+    </datalist>
+    <label class="check"><input type="checkbox" id="forecast"> Use the Open-Meteo forecast of the date
+      <span class="hint">(network; at the takeoff, else the map centre)</span></label>
+    <label class="check"><input type="checkbox" id="shadows"> Terrain shadows (slower)</label>
+    <details id="weather-details">
+      <summary>Adjust values <span class="hint">(empty = preset / forecast)</span></summary>
+      <div id="weather-fields" class="grid2"></div>
+      <button id="btn-reset-weather" class="link">Clear all</button>
+    </details>
+    <button id="btn-weather" class="secondary">Preview the weather</button>
+    <div id="weather-out"></div>
+  </section>
+
+  <section>
+    <h2><span class="step">4</span> Flights</h2>
+    <div class="grid2">
+      <label>Objective <select id="objective">
+        <option value="triangle">Triangles (flat or FAI)</option>
+        <option value="fai">FAI triangles only</option>
+        <option value="free">Free distance</option>
+        <option value="score">Best score, all kinds</option>
+      </select></label>
+      <label>Routes <input type="number" id="n_routes" min="1" max="10" step="1"></label>
+    </div>
+    <button id="btn-plan" class="primary">Compute flights</button>
+    <div id="status" class="status" hidden></div>
+    <pre id="log" hidden></pre>
+    <ol id="routes"></ol>
+  </section>
+</aside>
+
+<main>
+  <div id="plot"></div>
+  <div id="toolbar">
+    <label>Colour <select id="colour">
+      <option value="altitude">altitude</option>
+      <option value="lift">lift index</option>
+    </select></label>
+    <label id="hour-box" hidden>Lift at <input type="range" id="hour" min="0" max="0" step="1"> <b id="hour-label"></b></label>
+    <label>Relief ×<select id="exaggeration">
+      <option>1</option><option selected>1.5</option><option>2</option><option>3</option>
+    </select></label>
+    <span class="hint" id="cursor"></span>
+  </div>
+</main>
+
+<script src="/static/plotly.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

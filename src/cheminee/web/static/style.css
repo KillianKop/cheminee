@@ -1,0 +1,89 @@
+:root {
+  --bg: #f5f4f0;
+  --panel: #ffffff;
+  --ink: #1d232a;
+  --muted: #667080;
+  --line: #e1dfd8;
+  --accent: #c8501e;
+  --accent-ink: #ffffff;
+  --warn-bg: #fff3d6;
+  --warn-ink: #6b4b00;
+  --err: #b3261e;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; }
+body { display: flex; background: var(--bg); }
+
+#panel {
+  width: 380px;
+  flex: none;
+  height: 100%;
+  overflow-y: auto;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  padding: 0 16px 24px;
+}
+main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#plot { flex: 1; min-height: 0; }
+
+header { position: sticky; top: 0; background: var(--panel); padding: 14px 0 8px; z-index: 1; }
+h1 { font-size: 20px; margin: 0 0 8px; letter-spacing: 0.02em; }
+h1 span { font-size: 13px; font-weight: 400; color: var(--muted); }
+h2 { font-size: 15px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+.step {
+  display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--ink); color: #fff; font-size: 12px;
+}
+section { border-top: 1px solid var(--line); padding: 14px 0; }
+
+.warning { background: var(--warn-bg); color: var(--warn-ink); padding: 6px 8px; border-radius: 6px; margin: 0; font-size: 12px; }
+.hint { color: var(--muted); font-size: 12px; }
+p.hint { margin: 4px 0 8px; }
+
+label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+label.check { flex-direction: row; align-items: baseline; gap: 6px; color: var(--ink); margin: 8px 0; font-size: 13px; flex-wrap: wrap; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; margin-bottom: 6px; }
+input, select { font: inherit; color: var(--ink); padding: 5px 6px; border: 1px solid var(--line); border-radius: 5px; background: #fff; min-width: 0; }
+input::placeholder { color: #a3a9b3; }
+
+button { font: inherit; border-radius: 6px; padding: 7px 12px; cursor: pointer; border: 1px solid var(--line); background: #fff; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); width: 100%; font-weight: 600; padding: 9px; margin-top: 6px; }
+button.primary:disabled { opacity: 0.6; cursor: progress; }
+button.secondary { margin-top: 6px; }
+button.link { border: none; background: none; color: var(--accent); padding: 4px 0; }
+
+details { margin: 6px 0; }
+summary { cursor: pointer; font-size: 13px; margin-bottom: 8px; }
+
+.status { margin-top: 10px; font-size: 13px; }
+.status.error { color: var(--err); }
+pre#log { background: #1d232a; color: #d7dde4; font-size: 11px; padding: 8px; border-radius: 6px; max-height: 140px; overflow: auto; white-space: pre-wrap; }
+
+table { border-collapse: collapse; width: 100%; font-size: 12px; margin-top: 8px; font-variant-numeric: tabular-nums; }
+th, td { padding: 3px 4px; text-align: right; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 500; }
+td:first-child, th:first-child { text-align: left; }
+.arrow { display: inline-block; }
+.sources { font-size: 11px; color: var(--muted); margin-top: 6px; }
+
+#routes { list-style: none; padding: 0; margin: 10px 0 0; }
+#routes li { border: 1px solid var(--line); border-left: 6px solid var(--c); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; cursor: pointer; }
+#routes li.off { opacity: 0.5; }
+#routes .title { font-weight: 600; display: flex; justify-content: space-between; gap: 8px; }
+#routes .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+#routes table { display: none; }
+#routes li.open table { display: table; }
+
+#toolbar { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; padding: 8px 14px; border-top: 1px solid var(--line); background: var(--panel); }
+#toolbar label { flex-direction: row; align-items: center; gap: 6px; }
+#hour { width: 180px; }
+
+@media (max-width: 800px) {
+  body { flex-direction: column; }
+  #panel { width: 100%; height: auto; max-height: 55%; border-right: none; border-bottom: 1px solid var(--line); }
+}

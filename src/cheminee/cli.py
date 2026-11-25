@@ -291,6 +291,21 @@ def cmd_export(args) -> None:
     write_flight_package(package, args.out)
 
 
+def cmd_serve(args) -> None:
+    """Local web interface: 3D map, takeoff by click, weather, flights."""
+    from .domain import Terrain
+    from .web import WebApp, serve
+
+    terrain = Terrain.from_asc(args.dem)
+    fetch_payload = None
+    if not args.no_forecast:
+        from .weather import openmeteo
+
+        fetch_payload = openmeteo.fetch_payload
+    app = WebApp(terrain, lift_factory(args.model), fetch_payload=fetch_payload, dem_name=os.path.basename(args.dem))
+    serve(app, args.port, args.open)
+
+
 def cmd_synth(args) -> None:
     from .domain import Terrain
     from .igc import synthetic
@@ -361,6 +376,14 @@ def main(argv=None) -> None:
     sp.add_argument("--dem-attribution", help="attribution notice of the DEM (default: Copernicus DEM notice)")
     sp.add_argument("--no-graph", action="store_true", help="leave out the routing graph (smaller file)")
     sp.set_defaults(func=cmd_export)
+
+    sp = sub.add_parser("serve", help="local web interface: 3D map, takeoff by click, weather, flights")
+    sp.add_argument("dem", help="ESRI ASCII grid (.asc), WGS84 lon/lat")
+    sp.add_argument("--model", help="ThermalNet checkpoint; without it the heuristic lift model is used")
+    sp.add_argument("--port", type=int, default=8765, help="port on 127.0.0.1")
+    sp.add_argument("--open", action="store_true", help="open the page in the default browser")
+    sp.add_argument("--no-forecast", action="store_true", help="disable Open-Meteo forecasts (no network at all)")
+    sp.set_defaults(func=cmd_serve)
 
     sp = sub.add_parser("synth-igc", help="generate synthetic IGC files (pipeline testing)")
     sp.add_argument("dem")

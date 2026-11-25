@@ -17,6 +17,7 @@ data/*
 # Generated outputs
 models/*.npz
 *.html
+!src/cheminee/web/static/index.html
 flight.json
 emagram.png
 forecast.json
