@@ -19,12 +19,20 @@ The flight package has its own version number (`version` in the JSON, see [docs/
   range, vertical profile); the web interface offers them in a menu, warns when the date is beyond the range
   and compares them all for a date (`POST /api/weather/compare`, one cached request per model).
 
+- Planner: climbs shared out like a pilot (`Params.partial_climbs`): climb only what is needed to reach a
+  stronger thermal or the goal, cross weak thermals without circling (with the height gained in their core,
+  `dolphin_core_m`), wait for a thermal that does not work yet, final glide at the safety margin. The search
+  keeps 3 neighbours per sector instead of 2 (`neighbours_per_sector`) to skip weak thermals. Sample DEM: June
+  triangle 3.9 -> 3.3 h (14.9 -> 17.5 km/h), June free distance 80 -> 87 km, 27 November triangle 17 -> 24 km.
+
 ### Fixed
 
+- The final glide added earlier in this release checked the terrain under the glide with the height lost
+  from the end instead of from the start: a ridge near the goal could be passed below the clearance. Fixed in
+  the shared-out climbs, with a test of the clearance along every glide.
 - Final glide: the last thermal was climbed to the ceiling and routes ended far above the goal (640 m above
-  ground on the sample triangle), with one more climb counted after arrival in their duration and speed. The
-  last climb now stops at the height the final glide needs (arrival margin, terrain on the way), at the best
-  speed, and routes end on arrival (`Params.final_glide`).
+  ground on the sample triangle), with one more climb counted after arrival in their duration and speed. Routes
+  now end on arrival, after a final glide at the safety margin (see the shared-out climbs above).
 - Forecast not covering the flying day (date beyond the model range, e.g. AROME two days ahead) was converted
   into a ceiling at the station altitude all afternoon. It is now refused (`ForecastUnavailable`), with a clear
   message on the command line and in the web interface.

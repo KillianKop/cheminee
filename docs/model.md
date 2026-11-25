@@ -178,15 +178,25 @@ keep 60 m of clearance above the terrain along the whole glide (started at the c
 120 m above $b$. This is MacCready's reasoning: fly faster when the next thermal is strong, and into the wind.
 The mean speed of the flight is therefore no longer a parameter: it is a result.
 
-**Final glide.** The search climbs back to the ceiling in every thermal, including the last one. Once a route is
-chosen, its last glide $a \to b$ is redone (`Params.final_glide`, on by default): in the thermal of $a$ the pilot
-climbs only to the height that glide needs,
+**Climbing like a pilot.** The search climbs back to the ceiling in every thermal: it keeps the graph small
+(one state per node and time) and gives each leg the MacCready cost above. Once a route is chosen, its climbs
+are shared out along it (`Params.partial_climbs`, on by default), with the greedy rule of the "gas station
+problem": altitude is fuel and a metre climbed at node $k$ costs $1 / c_k$ seconds.
 
-$$h_{need}(v) = \max\Big(z_b + 120 + d\,\frac{s(v)}{v_{gnd}(v)},\ \max_x \big(\text{terrain}(x) + \text{clearance} + \text{loss from } x \text{ to } b\big)\Big),$$
+- In a thermal, if a stronger thermal further on, or the goal, can be reached without climbing above the
+  ceiling, the pilot climbs just enough to reach it; otherwise they climb to the ceiling.
+- A thermal not worth circling is crossed in a straight line. Crossing its core still gains
+  $w \cdot D / v_{gnd}$ metres, with $w$ the rising air speed and $D$ = `dolphin_core_m` (150 m): dolphin
+  flying.
+- A thermal reached before it works (the day is still building) is waited for, hanging on in weak lift.
+- The last climb stops at the height the final glide needs, and the flight ends on arrival.
 
-at the speed minimising climb time + glide time, and the flight ends on arrival at $b$. The route therefore
-arrives 120 m above the goal, or higher only when a ridge on the way requires it; its duration no longer
-includes a climb after landing.
+Every departure height respects the terrain clearance along the whole glide, $h \ge \text{terrain}(x) +
+\text{clearance} + f \cdot \text{loss}$ at the fraction $f$ of the leg, and the arrival margin. The rule is
+optimal for climb rates that do not change with time; the timeline is then recomputed with the rates of the
+actual arrival times, and the full-climb plan is kept if the shared one is not faster. The search also keeps 3
+neighbours per azimuth sector (`Params.neighbours_per_sector`), so that long glides skipping weak thermals are
+available to it.
 
 ### 5.3 Free distance
 
@@ -274,6 +284,6 @@ What these numbers say:
 - Land cover (forest, rock, meadow) as terrain features.
 - Horizontally varying wind (valley channelling, convergence).
 - Airspace and landing fields as optimiser constraints.
-- Variable start altitude on every leg, not only the last one (do not always climb back to the ceiling):
-  altitude as a state of the search, so that weak thermals are left early.
+- Altitude as a state of the search itself (the climbs are only shared out after the search today), and
+  climb rates that weaken near the top of the thermal.
 - Free distance: end with a glide beyond the last thermal, to the farthest reachable point.
