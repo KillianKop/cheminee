@@ -404,21 +404,29 @@ def cmd_evaluate(args) -> None:
     if not paths:
         raise SystemExit(f"No IGC file found in {args.igc_dir}")
     models = {"heuristic": HeuristicLift}  # classes and NeuralFactory: picklable for the parallel workers
-    split = {}
+    split, validation = {}, None
     if args.model:
         from .lift.neural import NeuralFactory, load_checkpoint
+        from .training.dataset import flights_fingerprint
 
         for path in args.model:
             meta = load_checkpoint(path)[1]
             models[path] = NeuralFactory(path)
-            split = split or meta.get("config", {})  # the split of the (first) network: same validation flights
+            if not split:  # the split of the (first) network: same validation flights
+                split = meta.get("config", {})
+                val = meta.get("validation") or {}
+                if val.get("paths_sha256") == flights_fingerprint(paths):
+                    validation = val["flights"]
+                elif val:
+                    print("[evaluate] the IGC files differ from the training ones: rebuilding the split")
     cfg = EvalConfig(
         val_fraction=split.get("val_fraction", EvalConfig.val_fraction),
         seed=split.get("seed", EvalConfig.seed),
         max_flights=args.max_flights,
         radius_m=args.radius_m,
     )
-    print_scores(evaluate(Terrain.from_asc(args.dem), paths, models, cfg, workers=args.workers))
+    terrain = Terrain.from_asc(args.dem)
+    print_scores(evaluate(terrain, paths, models, cfg, workers=args.workers, validation=validation))
 
 
 def cmd_train(args) -> None:
@@ -427,7 +435,8 @@ def cmd_train(args) -> None:
     from .domain import Terrain
     from .igc import find_igc
     from .training import DatasetConfig, TrainConfig, build_dataset, train
-    from .training.train import plot_report
+    from .training.dataset import flights_fingerprint
+    from .training.train import plot_report, validation_flights
 
     paths = find_igc(args.igc_dir)
     if not paths:
@@ -435,7 +444,12 @@ def cmd_train(args) -> None:
     data_cfg = DatasetConfig(background=args.background.replace("-", "_"), bg_radius_m=args.background_radius_m)
     dataset = build_dataset(Terrain.from_asc(args.dem), paths, data_cfg)
     cfg = TrainConfig(epochs=args.epochs, lr=args.lr, seed=args.seed)
-    _, history = train(dataset, cfg, args.out, extra_meta={"dataset": asdict(data_cfg)})
+    validation = dict(  # lets `evaluate` read the validation flights only (indices and a fingerprint, no names)
+        flights=sorted(int(k) for k in validation_flights(dataset.group, cfg.val_fraction, cfg.seed)),
+        n_paths=len(paths),
+        paths_sha256=flights_fingerprint(paths),
+    )
+    _, history = train(dataset, cfg, args.out, extra_meta={"dataset": asdict(data_cfg), "validation": validation})
     if args.report:
         plot_report(history, args.report)
 

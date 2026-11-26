@@ -23,6 +23,7 @@ of the nearest point.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -236,14 +237,24 @@ def samples_from_track(
     return X, fs.target, fs.weight
 
 
-def iter_flights(terrain: Terrain, igc_paths: list, cfg: DatasetConfig, sample=None):
+def flights_fingerprint(igc_paths: list) -> str:
+    """SHA-256 of the sorted file names: tells whether a list of flights is the one a model was trained on,
+    without storing the names (they can name pilots or places)."""
+    names = "\n".join(Path(p).name for p in sorted(Path(p) for p in igc_paths))
+    return hashlib.sha256(names.encode("utf-8")).hexdigest()
+
+
+def iter_flights(terrain: Terrain, igc_paths: list, cfg: DatasetConfig, sample=None, only: set | None = None):
     """Read the flights in a fixed order and yield (flight index, path, track, result of `sample`) for the usable
     ones; `sample(track, rng, weather)` defaults to `flight_samples`. Returns the number of flights skipped and
-    of weather files. Training and evaluation share it: same flights, same indices, same train/validation split."""
+    of weather files. Training and evaluation share it: same flights, same indices, same train/validation split.
+    `only`: flight indices to read, the others are skipped without reading them."""
     rng = np.random.default_rng(cfg.seed)
     sample = sample or (lambda track, rng, weather: flight_samples(track, terrain, cfg, rng, weather=weather))
     skipped = n_sidecar = 0
     for k, path in enumerate(sorted(Path(p) for p in igc_paths)):
+        if only is not None and k not in only:
+            continue
         try:
             sidecar = path.with_suffix(".weather.json")
             weather = load_points(str(sidecar)) if sidecar.exists() else None

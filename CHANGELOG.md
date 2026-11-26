@@ -8,6 +8,11 @@ The flight package has its own version number (`version` in the JSON, see [docs/
 
 ### Added
 
+- `evaluate` is about 3.5 times faster: `NeuralLift.field(hour, mask)` runs the network on the cells of a mask
+  (and those within reach of the smoothing) only, with the values of the full field there, and the evaluation
+  asks for the cells it reads; `train` records the validation flights in the checkpoint (`meta.validation`:
+  indices, count and SHA-256 of the file names, no names), so `evaluate` no longer reads every flight to rebuild
+  the split.
 - `cheminee train --background near-track`: the background pseudo-absences are drawn within 3 km of the pilot,
   away from the thermals of the flight, instead of anywhere on the DEM (`DatasetConfig.background`); the
   checkpoint records the dataset options (`meta.dataset`).

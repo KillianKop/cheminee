@@ -28,7 +28,7 @@ Python 3.10 or later.
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 tar -xzf data/dem/sample/rasters_COP30_sample.tar.gz -C data/dem/sample/   # sample DEM -> output_hh.asc
-pytest                                                 # 83 tests, about 20 s
+pytest                                                 # 85 tests, about 20 s
 cheminee serve data/dem/sample/output_hh.asc --open    # web interface (3D map) on http://127.0.0.1:8765
 cheminee gui data/dem/sample/output_hh.asc             # 2D interface
 ```
@@ -226,8 +226,10 @@ It prints, per model, the agreement with the measured lift (Pearson r, mean abso
 what matters to the planner: where each real thermal was found, how high the model ranks that place among the
 ground within 3 km (*thermal rank*: 0.5 = chance, 1 = always the best spot; *top 10 %*: share of thermals in the
 best tenth of the ground around, chance = 10 %). A constant model gives the baseline. `--max-flights 20` for a
-quick look; the flights are scored in parallel processes (`--workers`, 3 on a 6-core laptop: about 18 min
-for 177 validation flights on a 150 km DEM).
+quick look; the flights are scored in parallel processes (`--workers`, 3 on a 6-core laptop). The network is
+only run on the cells the scores read, and `train` records its validation flights in the checkpoint (indices
+and a fingerprint of the file names, no names), so `evaluate` reads those flights only: a few minutes for 177
+validation flights on a 150 km DEM.
 
 Each `flight.igc` can come with a `flight.weather.json`. `fetch-weather` takes the weather at three points of
 the flight: the turnpoints of a triangle, or the takeoff, the middle and the farthest point of a straight or
