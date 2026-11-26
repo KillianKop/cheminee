@@ -66,13 +66,23 @@ class NeuralLift:
     def from_checkpoint(cls, terrain: Terrain, params: Params, path: str) -> NeuralLift:
         return cls(terrain, params, load_checkpoint(path)[0])
 
+    supports_mask = True  # field(hour, mask): only the cells of the mask are exact, the others are not computed
+
     @torch.no_grad()
-    def field(self, hour_local: float) -> np.ndarray:
+    def field(self, hour_local: float, mask: np.ndarray | None = None) -> np.ndarray:
+        """Lift index of the grid. With a boolean `mask` (ny, nx), the network runs only on the mask and the cells
+        within reach of the smoothing kernel: the values on the mask are the ones of the full field, the others
+        are meaningless (an evaluation that reads a few places does not pay for the whole grid)."""
         p, t = self.p, self.t
-        x = ft.assemble(self.static, p.day_of_year, p.to_utc(hour_local), t.lat_mid, t.lon_mid, p.weather)
-        out = torch.cat([torch.sigmoid(self.model(chunk)) for chunk in torch.from_numpy(x).split(131072)])
-        lift = out.numpy().reshape(t.ny, t.nx)
-        return np.clip(ndimage.gaussian_filter(lift, self.sigma), 0, 1).astype(np.float32)
+        cells = slice(None)
+        if mask is not None:
+            reach = int(4.0 * self.sigma + 0.5)  # radius of gaussian_filter (truncate = 4)
+            cells = np.flatnonzero(ndimage.maximum_filter(mask, size=2 * reach + 1))
+        x = ft.assemble(self.static[cells], p.day_of_year, p.to_utc(hour_local), t.lat_mid, t.lon_mid, p.weather)
+        out = torch.cat([torch.sigmoid(self.model(chunk)) for chunk in torch.from_numpy(x).split(8192)])
+        lift = np.zeros(t.ny * t.nx, dtype=np.float32)
+        lift[cells] = out.numpy()
+        return np.clip(ndimage.gaussian_filter(lift.reshape(t.ny, t.nx), self.sigma), 0, 1).astype(np.float32)
 
 
 class NeuralFactory:

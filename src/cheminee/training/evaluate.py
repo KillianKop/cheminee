@@ -47,17 +47,39 @@ def crop(terrain: Terrain, x0: float, y0: float, x1: float, y1: float) -> Terrai
     return Terrain(terrain.z[r0:r1, c0:c1].copy(), terrain.lon0 + c0 * cs, terrain.lat0 + (terrain.ny - r1) * cs, cs)
 
 
-def _rank(field: np.ndarray, win: Terrain, x: float, y: float, radius_m: float) -> float:
-    """Percentile of the field at (x, y) among the cells within radius_m (ties count half)."""
-    value = float(win.sample(field, x, y))
+def _disc(win: Terrain, x: float, y: float, radius_m: float):
+    """(rows, cols, disc): the window of the grid around (x, y) and the cells of it within radius_m."""
     r, c = (float(v) for v in win.xy_to_rowcol(x, y))
     kr, kc = int(radius_m / win.dy) + 1, int(radius_m / win.dx) + 1
     r0, r1 = max(int(r) - kr, 0), min(int(r) + kr + 1, win.ny)
     c0, c1 = max(int(c) - kc, 0), min(int(c) + kc + 1, win.nx)
     rows, cols = np.mgrid[r0:r1, c0:c1]
     disc = ((rows - r) * win.dy) ** 2 + ((cols - c) * win.dx) ** 2 <= radius_m**2
-    around = field[r0:r1, c0:c1][disc]
+    return slice(r0, r1), slice(c0, c1), disc
+
+
+def _rank(field: np.ndarray, win: Terrain, x: float, y: float, radius_m: float) -> float:
+    """Percentile of the field at (x, y) among the cells within radius_m (ties count half)."""
+    value = float(win.sample(field, x, y))
+    rows, cols, disc = _disc(win, x, y, radius_m)
+    around = field[rows, cols][disc]
     return float(np.mean(around < value) + 0.5 * np.mean(around == value))
+
+
+def _needed(win: Terrain, x: np.ndarray, y: np.ndarray, thermals: np.ndarray, radius_m: float) -> np.ndarray:
+    """Cells an evaluation reads: the 2 x 2 cells around each sample (bilinear sampling) and the discs of the
+    thermal rankings. A model that supports it computes its field there only."""
+    mask = np.zeros(win.z.shape, dtype=bool)
+    r, c = win.xy_to_rowcol(x, y)
+    r0 = np.clip(np.floor(r).astype(int), 0, win.ny - 1)
+    c0 = np.clip(np.floor(c).astype(int), 0, win.nx - 1)
+    for dr in (0, 1):
+        for dc in (0, 1):
+            mask[np.minimum(r0 + dr, win.ny - 1), np.minimum(c0 + dc, win.nx - 1)] = True
+    for i in thermals:
+        rows, cols, disc = _disc(win, float(x[i]), float(y[i]), radius_m + max(win.dx, win.dy))
+        mask[rows, cols] |= disc
+    return mask
 
 
 def _flight_task(terrain: Terrain, track, fs, cfg: EvalConfig) -> dict:
@@ -102,11 +124,18 @@ def _score_flight(task: dict, models: dict, radius_m: float) -> tuple[dict, dict
             in_q = task["near"][idx] == q
             for b in np.unique(task["bins"][idx][in_q]):
                 sel = np.flatnonzero(in_q & (task["bins"][idx] == b))
+                firsts = sel[task["first"][idx[sel]]]
+                mask = None
                 for name, lift in lifts.items():
-                    field = lift.field(float(b))  # utc_offset 0: local hour = UTC hour
+                    if getattr(lift, "supports_mask", False):  # compute only the cells the scores read
+                        if mask is None:
+                            mask = _needed(win, wx[sel], wy[sel], np.searchsorted(sel, firsts), radius_m)
+                        field = lift.field(float(b), mask=mask)  # utc_offset 0: local hour = UTC hour
+                    else:
+                        field = lift.field(float(b))
                     n_fields += 1
                     out[name][idx[sel]] = win.sample(field, wx[sel], wy[sel])
-                    for i in sel[task["first"][idx[sel]]]:
+                    for i in firsts:
                         ranks[name].append(_rank(field, win, float(wx[i]), float(wy[i]), radius_m))
     return out, ranks, n_fields
 
@@ -125,21 +154,29 @@ def evaluate(
     cfg: EvalConfig | None = None,
     data_cfg: DatasetConfig | None = None,
     workers: int = 1,
+    validation: list | None = None,
 ) -> dict:
     """Scores of each model `name -> factory(terrain, params) -> LiftModel` on the validation flights.
 
     With `workers` > 1 the flights are scored in parallel processes; the factories must then be picklable
-    (a class such as `HeuristicLift`, or `lift.neural.NeuralFactory`)."""
+    (a class such as `HeuristicLift`, or `lift.neural.NeuralFactory`). `validation`: the validation flight
+    indices recorded by `train` (only those flights are read); otherwise the split is rebuilt."""
     from .train import validation_flights
 
     cfg, data_cfg = cfg or EvalConfig(), data_cfg or DatasetConfig()
     t0 = time.perf_counter()
-    flights = list(iter_flights(terrain, igc_paths, data_cfg))
-    val = set(validation_flights([k for k, *_ in flights], cfg.val_fraction, cfg.seed).tolist())
-    chosen = [f for f in flights if f[0] in val][: cfg.max_flights]
+    if validation is not None:  # recorded by train: read the validation flights only
+        val = set(int(k) for k in validation)
+        chosen = list(iter_flights(terrain, igc_paths, data_cfg, only=val))[: cfg.max_flights]
+        source = "the checkpoint"
+    else:  # rebuild the split: every flight is read to know which ones are usable
+        flights = list(iter_flights(terrain, igc_paths, data_cfg))
+        val = set(validation_flights([k for k, *_ in flights], cfg.val_fraction, cfg.seed).tolist())
+        chosen = [f for f in flights if f[0] in val][: cfg.max_flights]
+        source = f"{len(flights)} usable flights"
     print(
-        f"[evaluate] {len(flights)} usable flights, {len(val)} held out for validation, {len(chosen)} evaluated, "
-        f"{workers} worker(s) ({time.perf_counter() - t0:.0f} s to read the flights)"
+        f"[evaluate] {len(val)} validation flights (from {source}), {len(chosen)} evaluated, {workers} worker(s) "
+        f"({time.perf_counter() - t0:.0f} s to read the flights)"
     )
     tasks = (_flight_task(terrain, track, fs, cfg) for _, _, track, fs in chosen)
     pred = {name: [] for name in models}

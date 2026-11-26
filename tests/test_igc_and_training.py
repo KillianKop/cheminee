@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pytest
 
@@ -142,3 +144,66 @@ def test_near_track_background_samples(terrain, igc_dir):
     assert np.ptp(default.x[default.kind == BACKGROUND]) > np.ptp(near.x[bg])  # anywhere on the map
     with pytest.raises(ValueError):
         flight_samples(track, terrain, dataclasses.replace(cfg, background="nope"), np.random.default_rng(0))
+
+
+def test_neural_field_on_a_mask_and_masked_evaluation(terrain, igc_dir, tmp_path):
+    """A neural field computed on a mask has the values of the full field there, and `evaluate` (which computes
+    the network on the cells it reads only) gives the same scores as with full fields."""
+    import numpy as np
+    import torch
+
+    from cheminee.lift.neural import NeuralFactory, NeuralLift, ThermalNet, save_checkpoint
+    from cheminee.training.evaluate import EvalConfig, evaluate
+
+    torch.manual_seed(0)
+    net = ThermalNet(len(ft.FEATURE_NAMES)).eval()
+    lift = NeuralLift(terrain, Params(), net)
+    mask = np.zeros(terrain.z.shape, dtype=bool)
+    mask[50:60, 30:200] = True
+    mask[180, 100] = True
+    assert np.allclose(lift.field(14.0, mask=mask)[mask], lift.field(14.0)[mask], atol=1e-6)
+
+    ckpt = str(tmp_path / "net.pt")
+    save_checkpoint(ckpt, net, (64, 64, 32), {})
+
+    class Full:  # the same network, always on the whole grid
+        def __init__(self, t, p):
+            self.lift = NeuralFactory(ckpt)(t, p)
+
+        def field(self, hour):
+            return self.lift.field(hour)
+
+    cfg = EvalConfig(val_fraction=0.5, tile_m=3000.0, margin_m=1000.0)
+    paths = sorted(igc_dir.glob("*.igc"))
+    s = evaluate(terrain, paths, {"masked": NeuralFactory(ckpt), "full": Full}, cfg)["scores"]
+    assert s["masked"] == pytest.approx(s["full"], abs=1e-6)
+
+
+def test_validation_flights_recorded_by_train(terrain, igc_dir, tmp_path):
+    """`train` records the validation flights (indices and a fingerprint of the file names, not the names);
+    `evaluate` then reads only those flights and gets the same scores as when it rebuilds the split."""
+    import torch
+
+    from cheminee.cli import main
+    from cheminee.lift import HeuristicLift
+    from cheminee.lift.neural import load_checkpoint
+    from cheminee.training.dataset import flights_fingerprint
+    from cheminee.training.evaluate import EvalConfig, evaluate
+
+    dem = tmp_path / "dem.asc"
+    with open(dem, "w") as f:
+        f.write(f"ncols {terrain.nx}\nnrows {terrain.ny}\nxllcorner {terrain.lon0}\nyllcorner {terrain.lat0}\n")
+        f.write(f"cellsize {terrain.cell_deg}\n")
+        np.savetxt(f, terrain.z, fmt="%.2f")
+    ckpt = tmp_path / "net.pt"
+    torch.manual_seed(0)
+    main(["train", str(dem), str(igc_dir), "--out", str(ckpt), "--epochs", "2"])
+    val = load_checkpoint(str(ckpt))[1]["validation"]
+    paths = sorted(igc_dir.glob("*.igc"))
+    assert val["paths_sha256"] == flights_fingerprint(paths) and val["n_paths"] == len(paths)
+    assert all(p.stem not in json.dumps(val) for p in paths)  # no file name stored
+    cfg = EvalConfig(tile_m=3000.0, margin_m=1000.0)
+    rebuilt = evaluate(terrain, paths, {"h": HeuristicLift}, cfg)
+    recorded = evaluate(terrain, paths, {"h": HeuristicLift}, cfg, validation=val["flights"])
+    assert recorded["n_flights"] == rebuilt["n_flights"] == len(val["flights"])
+    assert recorded["scores"]["h"] == pytest.approx(rebuilt["scores"]["h"], nan_ok=True)
