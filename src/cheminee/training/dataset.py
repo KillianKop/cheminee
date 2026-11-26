@@ -75,17 +75,33 @@ def weather_from_track(track: IgcTrack, thermals: list) -> Weather:
     )
 
 
-def samples_from_track(
+THERMAL, GLIDE, BACKGROUND = 0, 1, 2  # kinds of samples
+
+
+@dataclass
+class FlightSamples:
+    """Where and when the samples of one flight are taken, with their target (before the features)."""
+
+    x: np.ndarray  # (n,) metres, local frame of the terrain
+    y: np.ndarray
+    t_s: np.ndarray  # (n,) seconds UTC of the flight day
+    target: np.ndarray  # (n,) lift index in [0, 1]
+    weight: np.ndarray  # (n,)
+    kind: np.ndarray  # (n,) THERMAL, GLIDE or BACKGROUND
+    thermal: np.ndarray  # (n,) index of the thermal of a THERMAL sample, -1 otherwise
+    weather: Weather  # weather of the flight (first point, or estimated from the track)
+    points: list  # weather points with a position (more than one: each sample takes the nearest)
+
+
+def flight_samples(
     track: IgcTrack,
     terrain: Terrain,
-    stack: np.ndarray,
     cfg: DatasetConfig,
     rng: np.random.Generator,
     thermal_cfg: ThermalConfig | None = None,
     weather: Weather | list[WeatherPoint] | None = None,
-):
-    """Return (X, y, w) for one flight, or None if it has no usable thermal on the DEM. `weather` may be the
-    weather at a few points of the flight: each sample then takes the weather of the nearest point."""
+) -> FlightSamples | None:
+    """Samples of one flight, or None if it has no usable thermal on the DEM."""
     x, y = terrain.lonlat_to_xy(track.lon, track.lat)
     thermals = [th for th in detect_thermals(track.t, x, y, track.alt, thermal_cfg) if terrain.contains(th.x, th.y)]
     if not thermals:
@@ -97,14 +113,15 @@ def samples_from_track(
         weather = weather_from_track(track, thermals)
 
     # 1. thermal samples (same location, successive instants of the climb)
-    px, py, pt, target = [], [], [], []
-    for th in thermals:
+    px, py, pt, target, tid = [], [], [], [], []
+    for k, th in enumerate(thermals):
         n = max(1, int(round(th.duration_s / cfg.thermal_sample_s)))
         times = th.t0 + (np.arange(n) + 0.5) * th.duration_s / n
         px += [th.x] * n
         py += [th.y] * n
         pt += list(times)
         target += [float(np.clip((th.climb_ms + cfg.sink_ms) / cfg.w_ref_ms, 0, 1))] * n
+        tid += [k] * n
     n_pos = len(pt)
     weight = [1.0] * n_pos
 
@@ -130,39 +147,95 @@ def samples_from_track(
     pt += list(rng.uniform(thermals[0].t0, thermals[-1].t1, n_bg))
     target += [0.0] * n_bg
     weight += [cfg.bg_weight] * n_bg
+    kind = np.concatenate([np.full(n_pos, THERMAL), np.full(len(idx), GLIDE), np.full(n_bg, BACKGROUND)])
+    return FlightSamples(
+        np.array(px, dtype=float),
+        np.array(py, dtype=float),
+        np.array(pt, dtype=float),
+        np.array(target, dtype=np.float32),
+        np.array(weight, dtype=np.float32),
+        kind,
+        np.concatenate([np.array(tid, dtype=int), np.full(len(idx) + n_bg, -1)]),
+        weather,
+        points,
+    )
 
-    px, py, hours = np.array(px), np.array(py), np.array(pt) / 3600.0
-    static = ft.sample_static(terrain, stack, px, py)
-    if len(points) > 1:  # weather of the nearest point of the flight
-        qx, qy = terrain.lonlat_to_xy(np.array([q.lon for q in points]), np.array([q.lat for q in points]))
-        near = nearest_point(qx, qy, px, py)
-        X = np.zeros((len(px), len(ft.FEATURE_NAMES)), dtype=np.float32)
-        for k, q in enumerate(points):
+
+def nearest_weather(fs: FlightSamples, terrain: Terrain) -> np.ndarray:
+    """Index of the weather point of each sample (all 0 without positioned points)."""
+    if len(fs.points) <= 1:
+        return np.zeros(len(fs.x), dtype=int)
+    qx, qy = terrain.lonlat_to_xy(np.array([q.lon for q in fs.points]), np.array([q.lat for q in fs.points]))
+    return nearest_point(qx, qy, fs.x, fs.y)
+
+
+def samples_from_track(
+    track: IgcTrack,
+    terrain: Terrain,
+    stack: np.ndarray,
+    cfg: DatasetConfig,
+    rng: np.random.Generator,
+    thermal_cfg: ThermalConfig | None = None,
+    weather: Weather | list[WeatherPoint] | None = None,
+):
+    """Return (X, y, w) for one flight, or None if it has no usable thermal on the DEM. `weather` may be the
+    weather at a few points of the flight: each sample then takes the weather of the nearest point."""
+    fs = flight_samples(track, terrain, cfg, rng, thermal_cfg, weather)
+    if fs is None:
+        return None
+    hours = fs.t_s / 3600.0
+    static = ft.sample_static(terrain, stack, fs.x, fs.y)
+    if len(fs.points) > 1:  # weather of the nearest point of the flight
+        near = nearest_weather(fs, terrain)
+        X = np.zeros((len(fs.x), len(ft.FEATURE_NAMES)), dtype=np.float32)
+        for k, q in enumerate(fs.points):
             m = near == k
             if m.any():
                 X[m] = ft.assemble(static[m], track.day_of_year, hours[m], terrain.lat_mid, terrain.lon_mid, q.weather)
     else:
-        X = ft.assemble(static, track.day_of_year, hours, terrain.lat_mid, terrain.lon_mid, weather)
-    return X, np.array(target, dtype=np.float32), np.array(weight, dtype=np.float32)
+        X = ft.assemble(static, track.day_of_year, hours, terrain.lat_mid, terrain.lon_mid, fs.weather)
+    return X, fs.target, fs.weight
 
 
-def build_dataset(terrain: Terrain, igc_paths: list, cfg: DatasetConfig | None = None) -> ThermalDataset:
-    cfg = cfg or DatasetConfig()
+def iter_flights(terrain: Terrain, igc_paths: list, cfg: DatasetConfig, sample=None):
+    """Read the flights in a fixed order and yield (flight index, path, track, result of `sample`) for the usable
+    ones; `sample(track, rng, weather)` defaults to `flight_samples`. Returns the number of flights skipped and
+    of weather files. Training and evaluation share it: same flights, same indices, same train/validation split."""
     rng = np.random.default_rng(cfg.seed)
-    stack = ft.static_stack(terrain)
-    Xs, ys, ws, gs, skipped, n_sidecar = [], [], [], [], 0, 0
+    sample = sample or (lambda track, rng, weather: flight_samples(track, terrain, cfg, rng, weather=weather))
+    skipped = n_sidecar = 0
     for k, path in enumerate(sorted(Path(p) for p in igc_paths)):
         try:
             sidecar = path.with_suffix(".weather.json")
             weather = load_points(str(sidecar)) if sidecar.exists() else None
             n_sidecar += weather is not None
-            res = samples_from_track(read_igc(str(path)), terrain, stack, cfg, rng, weather=weather)
+            track = read_igc(str(path))
+            res = sample(track, rng, weather)
         except ValueError as exc:
             print(f"[dataset] skipped: {exc}")
             res = None
         if res is None:
             skipped += 1
             continue
+        yield k, path, track, res
+    return skipped, n_sidecar
+
+
+def build_dataset(terrain: Terrain, igc_paths: list, cfg: DatasetConfig | None = None) -> ThermalDataset:
+    cfg = cfg or DatasetConfig()
+    stack = ft.static_stack(terrain)
+    Xs, ys, ws, gs = [], [], [], []
+
+    def sample(track, rng, weather):
+        return samples_from_track(track, terrain, stack, cfg, rng, weather=weather)
+
+    flights = iter_flights(terrain, igc_paths, cfg, sample)
+    while True:
+        try:
+            k, _, _, res = next(flights)
+        except StopIteration as stop:
+            skipped, n_sidecar = stop.value
+            break
         Xs.append(res[0])
         ys.append(res[1])
         ws.append(res[2])

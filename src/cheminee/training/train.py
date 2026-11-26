@@ -24,12 +24,16 @@ class TrainConfig:
     seed: int = 0
 
 
+def validation_flights(flights, val_fraction: float, seed: int) -> np.ndarray:
+    """Flight indices held out for validation, among the sorted indices `flights` of the usable flights."""
+    rng = np.random.default_rng(seed)
+    flights = np.unique(np.asarray(flights))
+    return rng.choice(flights, max(1, int(round(val_fraction * len(flights)))), replace=False)
+
+
 def split_by_flight(ds: ThermalDataset, val_fraction: float, seed: int):
     """Split samples so that a flight is entirely in train or in validation."""
-    flights = np.unique(ds.group)
-    rng = np.random.default_rng(seed)
-    val_flights = rng.choice(flights, max(1, int(round(val_fraction * len(flights)))), replace=False)
-    val = np.isin(ds.group, val_flights)
+    val = np.isin(ds.group, validation_flights(ds.group, val_fraction, seed))
     return ~val, val
 
 
