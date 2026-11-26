@@ -43,6 +43,9 @@ class DatasetConfig:
     sink_ms: float = 1.25  # still-air sink rate of the glider
     thermal_sample_s: float = 60.0  # one sample per minute of climb
     glide_sample_s: float = 4.0
+    # low glides outnumber the thermal samples ~15 to 1: at weight 1 they drive the loss, and their (noisy)
+    # vario says little about where the thermals are. A lower weight lets the network focus on the thermals.
+    glide_weight: float = 1.0
     glide_agl_min_m: float = 30.0  # below: on the ground / landing
     glide_agl_max_m: float = 400.0  # above: the glide says nothing about the ground below
     vario_window_s: float = 20.0  # averaging window of the vertical speed in glides
@@ -63,6 +66,7 @@ class ThermalDataset:
     y: np.ndarray  # (n,) target lift index in [0, 1]
     w: np.ndarray  # (n,) sample weight
     group: np.ndarray  # (n,) flight index (used to split train / validation by flight)
+    kind: np.ndarray | None = None  # (n,) THERMAL, GLIDE or BACKGROUND
 
     def __len__(self) -> int:
         return len(self.y)
@@ -147,7 +151,7 @@ def flight_samples(
     py += list(y[idx])
     pt += list(track.t[idx])
     target += list(np.clip(netto[idx] / cfg.w_ref_ms, 0, 1))
-    weight += [1.0] * len(idx)
+    weight += [cfg.glide_weight] * len(idx)
 
     # 3. background samples
     n_bg = int(cfg.bg_ratio * n_pos)
@@ -218,7 +222,7 @@ def samples_from_track(
     thermal_cfg: ThermalConfig | None = None,
     weather: Weather | list[WeatherPoint] | None = None,
 ):
-    """Return (X, y, w) for one flight, or None if it has no usable thermal on the DEM. `weather` may be the
+    """Return (X, y, w, kind) for one flight, or None if it has no usable thermal on the DEM. `weather` may be the
     weather at a few points of the flight: each sample then takes the weather of the nearest point."""
     fs = flight_samples(track, terrain, cfg, rng, thermal_cfg, weather)
     if fs is None:
@@ -234,7 +238,7 @@ def samples_from_track(
                 X[m] = ft.assemble(static[m], track.day_of_year, hours[m], terrain.lat_mid, terrain.lon_mid, q.weather)
     else:
         X = ft.assemble(static, track.day_of_year, hours, terrain.lat_mid, terrain.lon_mid, fs.weather)
-    return X, fs.target, fs.weight
+    return X, fs.target, fs.weight, fs.kind
 
 
 def flights_fingerprint(igc_paths: list) -> str:
@@ -274,7 +278,7 @@ def iter_flights(terrain: Terrain, igc_paths: list, cfg: DatasetConfig, sample=N
 def build_dataset(terrain: Terrain, igc_paths: list, cfg: DatasetConfig | None = None) -> ThermalDataset:
     cfg = cfg or DatasetConfig()
     stack = ft.static_stack(terrain)
-    Xs, ys, ws, gs = [], [], [], []
+    Xs, ys, ws, gs, ks = [], [], [], [], []
 
     def sample(track, rng, weather):
         return samples_from_track(track, terrain, stack, cfg, rng, weather=weather)
@@ -290,9 +294,10 @@ def build_dataset(terrain: Terrain, igc_paths: list, cfg: DatasetConfig | None =
         ys.append(res[1])
         ws.append(res[2])
         gs.append(np.full(len(res[1]), k))
+        ks.append(res[3])
     if not Xs:
         raise ValueError("No usable flight: check that the IGC tracks overlap the DEM.")
-    ds = ThermalDataset(np.vstack(Xs), np.concatenate(ys), np.concatenate(ws), np.concatenate(gs))
+    ds = ThermalDataset(np.vstack(Xs), np.concatenate(ys), np.concatenate(ws), np.concatenate(gs), np.concatenate(ks))
     print(
         f"[dataset] {len(Xs)} flights ({skipped} skipped, {n_sidecar} with a weather file), {len(ds)} samples, "
         f"mean target {np.average(ds.y, weights=ds.w):.2f}"

@@ -120,8 +120,13 @@ that is, directly a lift index.
 | Kind | Where | Target $y$ | Weight |
 |---|---|---|---|
 | Thermal | **entry** point of the thermal, once per minute of climb | mean climb rate + $w_{sink}$ | 1 |
-| Low glide | under the pilot, when 30 to 400 m above the ground | instantaneous $w_{air}$ | 1 |
-| Background | random point of the DEM, random time of the flight (`--background map`, default); or within 3 km of the pilot at a random time, at least 400 m from the thermals of the flight (`--background near-track`) | 0 | 0.03 |
+| Low glide | under the pilot, when 30 to 400 m above the ground | instantaneous $w_{air}$ | 1 (`--glide-weight`) |
+| Background | random point of the DEM, random time of the flight (`--background map`, default); or within 3 km of the pilot at a random time, at least 400 m from the thermals of the flight (`--background near-track`); 0.5 per thermal sample (`--background-ratio`) | 0 | 0.03 (`--background-weight`) |
+
+Low glides are about 15 times more numerous than thermal samples: at equal weights they make most of the loss,
+and a vario on a glide says more about the hour and the luck of the pilot than about where the thermals are.
+The *thermal AUC* printed by `train` (probability that a thermal sample scores above a background sample of the
+validation flights) measures the part that matters to the planner.
 
 - A **thermal** is a phase where the smoothed vertical speed exceeds 0.5 m/s for at least 60 s, with at least
   50 m of gain and a ground track that turns (at least 3°/s on average). A straight climb in rising air is not

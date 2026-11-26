@@ -9,7 +9,7 @@ import torch
 from torch import nn
 
 from ..lift.neural import ThermalNet, save_checkpoint
-from .dataset import ThermalDataset
+from .dataset import BACKGROUND, THERMAL, ThermalDataset
 
 
 @dataclass
@@ -29,6 +29,19 @@ def validation_flights(flights, val_fraction: float, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     flights = np.unique(np.asarray(flights))
     return rng.choice(flights, max(1, int(round(val_fraction * len(flights)))), replace=False)
+
+
+def thermal_auc(score: np.ndarray, kind: np.ndarray) -> float:
+    """Probability that a thermal sample scores above a background sample (0.5 = chance, 1 = always): does the
+    network tell where the thermals are from the ground the pilot did not climb over? nan without both kinds."""
+    from scipy.stats import rankdata
+
+    pos, neg = kind == THERMAL, kind == BACKGROUND
+    n_pos, n_neg = int(pos.sum()), int(neg.sum())
+    if not n_pos or not n_neg:
+        return float("nan")
+    ranks = rankdata(score[pos | neg])[pos[pos | neg]]  # Mann-Whitney U, ties count half
+    return float((ranks.sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg))
 
 
 def split_by_flight(ds: ThermalDataset, val_fraction: float, seed: int):
@@ -52,12 +65,15 @@ def train(
     opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, cfg.epochs)
 
-    def loss_fn(idx):
-        per_sample = nn.functional.binary_cross_entropy_with_logits(model(X[idx]), y[idx], reduction="none")
+    def loss_fn(idx, logits=None):
+        logits = model(X[idx]) if logits is None else logits
+        per_sample = nn.functional.binary_cross_entropy_with_logits(logits, y[idx], reduction="none")
         return (per_sample * w[idx]).sum() / w[idx].sum()
 
+    va_kind = ds.kind[va] if ds.kind is not None else np.full(int(va.sum()), -1)
+
     tr_idx, va_idx = torch.from_numpy(np.flatnonzero(tr)), torch.from_numpy(np.flatnonzero(va))
-    history = {"train_loss": [], "val_loss": []}
+    history = {"train_loss": [], "val_loss": [], "val_auc": []}
     best, best_state, stale = np.inf, None, 0
     print(
         f"[train] {len(tr_idx)} train / {len(va_idx)} validation samples, "
@@ -76,11 +92,16 @@ def train(
         sched.step()
         model.eval()
         with torch.no_grad():
-            val_loss = loss_fn(va_idx).item()
+            logits = model(X[va_idx])
+            val_loss = loss_fn(va_idx, logits).item()
         history["train_loss"].append(total / len(tr_idx))
         history["val_loss"].append(val_loss)
+        history["val_auc"].append(thermal_auc(logits.numpy(), va_kind))
         if epoch % 5 == 0 or epoch == cfg.epochs - 1:
-            print(f"[train] epoch {epoch + 1:3d}  train {history['train_loss'][-1]:.4f}  val {val_loss:.4f}")
+            print(
+                f"[train] epoch {epoch + 1:3d}  train {history['train_loss'][-1]:.4f}  val {val_loss:.4f}  "
+                f"thermal AUC {history['val_auc'][-1]:.3f}"
+            )
         if val_loss < best - 1e-5:
             best, stale = val_loss, 0
             best_state = {k: v.clone() for k, v in model.state_dict().items()}
@@ -102,10 +123,11 @@ def train(
         best_val_loss=float(best),
         val_pearson=float(np.corrcoef(pred, y_val)[0, 1]),
         val_mae=float(np.average(np.abs(pred - y_val), weights=w_val)),
+        val_thermal_auc=thermal_auc(pred, va_kind),
     )
     print(
         f"[train] best val loss {best:.4f} | Pearson r {history['val_pearson']:.3f} | "
-        f"weighted MAE {history['val_mae']:.3f}"
+        f"weighted MAE {history['val_mae']:.3f} | thermal AUC {history['val_thermal_auc']:.3f}"
     )
     if out_path:
         meta = {
@@ -114,6 +136,7 @@ def train(
             "n_val": int(va.sum()),
             "best_val_loss": float(best),
             "val_pearson": history["val_pearson"],
+            "val_thermal_auc": history["val_thermal_auc"],
             **(extra_meta or {}),
         }
         save_checkpoint(out_path, model, cfg.hidden, meta)

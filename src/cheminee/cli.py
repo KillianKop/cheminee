@@ -441,7 +441,13 @@ def cmd_train(args) -> None:
     paths = find_igc(args.igc_dir)
     if not paths:
         raise SystemExit(f"No IGC file found in {args.igc_dir}")
-    data_cfg = DatasetConfig(background=args.background.replace("-", "_"), bg_radius_m=args.background_radius_m)
+    data_cfg = DatasetConfig(
+        background=args.background.replace("-", "_"),
+        bg_radius_m=args.background_radius_m,
+        bg_weight=args.background_weight,
+        bg_ratio=args.background_ratio,
+        glide_weight=args.glide_weight,
+    )
     dataset = build_dataset(Terrain.from_asc(args.dem), paths, data_cfg)
     cfg = TrainConfig(epochs=args.epochs, lr=args.lr, seed=args.seed)
     validation = dict(  # lets `evaluate` read the validation flights only (indices and a fingerprint, no names)
@@ -533,6 +539,16 @@ def main(argv=None) -> None:
         "from the thermals of the flight (near-track: learns to tell a thermal from the ground around it)",
     )
     sp.add_argument("--background-radius-m", type=float, default=3000.0, help="radius of the near-track samples")
+    sp.add_argument(
+        "--background-weight", type=float, default=0.03, help="weight of a background sample (a thermal sample: 1)"
+    )
+    sp.add_argument("--background-ratio", type=float, default=0.5, help="background samples drawn per thermal sample")
+    sp.add_argument(
+        "--glide-weight",
+        type=float,
+        default=1.0,
+        help="weight of a low glide sample (a thermal sample: 1); glides outnumber thermals ~15 to 1",
+    )
     sp.set_defaults(func=cmd_train)
 
     sp = sub.add_parser(

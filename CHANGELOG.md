@@ -8,6 +8,11 @@ The flight package has its own version number (`version` in the JSON, see [docs/
 
 ### Added
 
+- Training weights per kind of sample: `cheminee train --glide-weight W --background-weight W
+  --background-ratio R` (`DatasetConfig.glide_weight`, `bg_weight`, `bg_ratio`). Low glides outnumber the
+  thermal samples about 15 to 1 and drove the loss; the background samples weighed about 1.5 % of it. `train`
+  also reports the *thermal AUC* of the validation flights (does a thermal sample score above a background
+  sample?), recorded in the checkpoint (`meta.val_thermal_auc`).
 - `evaluate` is about 3.5 times faster: `NeuralLift.field(hour, mask)` runs the network on the cells of a mask
   (and those within reach of the smoothing) only, with the values of the full field there, and the evaluation
   asks for the cells it reads; `train` records the validation flights in the checkpoint (`meta.validation`:

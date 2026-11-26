@@ -207,3 +207,23 @@ def test_validation_flights_recorded_by_train(terrain, igc_dir, tmp_path):
     recorded = evaluate(terrain, paths, {"h": HeuristicLift}, cfg, validation=val["flights"])
     assert recorded["n_flights"] == rebuilt["n_flights"] == len(val["flights"])
     assert recorded["scores"]["h"] == pytest.approx(rebuilt["scores"]["h"], nan_ok=True)
+
+
+def test_sample_weights_by_kind_and_thermal_auc(terrain, igc_dir):
+    """`glide_weight` / `bg_weight` set the weight of each kind of sample; the thermal AUC is 1 when every
+    thermal scores above every background sample, 0.5 for a constant score."""
+    from cheminee.training import DatasetConfig
+    from cheminee.training.dataset import BACKGROUND, GLIDE, THERMAL
+    from cheminee.training.train import thermal_auc
+
+    paths = sorted(igc_dir.glob("*.igc"))
+    ds = build_dataset(terrain, paths, DatasetConfig(glide_weight=0.2, bg_weight=0.7))
+    assert ds.kind is not None and len(ds.kind) == len(ds.y)
+    assert set(np.unique(ds.w[ds.kind == GLIDE])) == {np.float32(0.2)}
+    assert set(np.unique(ds.w[ds.kind == BACKGROUND])) == {np.float32(0.7)}
+    assert set(np.unique(ds.w[ds.kind == THERMAL])) == {np.float32(1.0)}
+    kind = np.array([THERMAL, THERMAL, BACKGROUND, BACKGROUND, GLIDE])
+    assert thermal_auc(np.array([0.9, 0.8, 0.1, 0.2, 5.0]), kind) == 1.0
+    assert thermal_auc(np.zeros(5), kind) == 0.5
+    assert np.isnan(thermal_auc(np.zeros(2), kind[:2]))
+

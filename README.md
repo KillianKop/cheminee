@@ -213,7 +213,23 @@ network learnt from them in `models/local/`: both are ignored by git.
 By default the "no thermal here" samples (background pseudo-absences) are drawn anywhere on the DEM. With
 `--background near-track` they are drawn within 3 km of where the pilot was (`--background-radius-m`), away from
 the thermals of the flight: the network then has to tell a thermal from the ground around it, which is what the
-planner needs. The checkpoint records the option (`meta.dataset`).
+planner needs. The checkpoint records the options (`meta.dataset`).
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--background` | `map` | where the "no thermal here" samples are drawn: `map` or `near-track` |
+| `--background-radius-m` | `3000` | radius of the near-track samples around the pilot |
+| `--background-weight` | `0.03` | weight of a background sample (a thermal sample weighs 1) |
+| `--background-ratio` | `0.5` | background samples drawn per thermal sample |
+| `--glide-weight` | `1.0` | weight of a low glide sample; glides outnumber thermal samples about 15 to 1 |
+
+`train` prints the *thermal AUC* of the validation flights: the probability that a thermal sample scores above
+a background sample (0.5 = chance). With `--background near-track` it says whether the network finds the
+thermal among the ground around the pilot. On real tracks, the options that place thermals best are:
+
+```bash
+cheminee train $DEM data/igc --out models/local/thermal_net.pt   --background near-track --background-ratio 2 --background-weight 1 --glide-weight 0.3
+```
 
 Is the network better than the analytical model? `evaluate` scores both on the flights `train` held out for
 validation (same flights, same split), with the lift field the planner would see:
