@@ -10,8 +10,10 @@ Three kinds of samples are extracted from each flight:
                       thermal (proxy of its trigger on the ground, before wind drift);
 - low glide samples : netto measured while gliding close to the terrain, located under
                       the pilot (graded information, including "no lift here");
-- background samples: target = 0 with a small weight, random points of the DEM at random
-                      instants of the flight ("pseudo-absences": nobody ever flew there).
+- background samples: target = 0 with a small weight ("pseudo-absences": the pilot did not climb
+                      there), random points of the DEM at random instants of the flight, or
+                      (`DatasetConfig.background = "near_track"`) random points within 3 km of
+                      where the pilot was, away from the thermals of the flight.
 
 Weather of a flight: read from `<track>.weather.json` when the file exists, otherwise
 estimated from the track (`weather_from_track`). The file holds one `Weather`, or the weather
@@ -45,6 +47,12 @@ class DatasetConfig:
     vario_window_s: float = 20.0  # averaging window of the vertical speed in glides
     bg_ratio: float = 0.5  # background samples per thermal sample
     bg_weight: float = 0.03
+    # where the background pseudo-absences are drawn: "map" (anywhere on the DEM, at a random time of the flight)
+    # or "near_track" (within bg_radius_m of where the pilot was at that time, at least bg_min_dist_m from the
+    # thermals of the flight): the network then learns to tell a thermal from the ground around it
+    background: str = "map"
+    bg_radius_m: float = 3000.0
+    bg_min_dist_m: float = 400.0
     seed: int = 0
 
 
@@ -142,9 +150,17 @@ def flight_samples(
 
     # 3. background samples
     n_bg = int(cfg.bg_ratio * n_pos)
-    px += list(rng.uniform(0, terrain.width, n_bg))
-    py += list(rng.uniform(0, terrain.height, n_bg))
-    pt += list(rng.uniform(thermals[0].t0, thermals[-1].t1, n_bg))
+    if cfg.background == "near_track":
+        bx, by, bt = _near_track(x, y, track.t, thermals, terrain, cfg, rng, n_bg)
+    elif cfg.background == "map":
+        bx, by = rng.uniform(0, terrain.width, n_bg), rng.uniform(0, terrain.height, n_bg)
+        bt = rng.uniform(thermals[0].t0, thermals[-1].t1, n_bg)
+    else:
+        raise ValueError(f"background: 'map' or 'near_track', got {cfg.background!r}")
+    n_bg = len(bx)
+    px += list(bx)
+    py += list(by)
+    pt += list(bt)
     target += [0.0] * n_bg
     weight += [cfg.bg_weight] * n_bg
     kind = np.concatenate([np.full(n_pos, THERMAL), np.full(len(idx), GLIDE), np.full(n_bg, BACKGROUND)])
@@ -159,6 +175,29 @@ def flight_samples(
         weather,
         points,
     )
+
+
+def _near_track(x, y, t, thermals, terrain: Terrain, cfg: DatasetConfig, rng: np.random.Generator, n: int):
+    """n pseudo-absences within cfg.bg_radius_m of the pilot (uniform in the disc), at the time of a random fix
+    between the first and the last thermal, on the DEM and at least cfg.bg_min_dist_m from every thermal."""
+    fixes = np.flatnonzero(terrain.contains(x, y) & (t >= thermals[0].t0) & (t <= thermals[-1].t1))
+    if n <= 0 or not len(fixes):
+        return np.empty(0), np.empty(0), np.empty(0)
+    tx, ty = np.array([th.x for th in thermals]), np.array([th.y for th in thermals])
+    out_x, out_y, out_t = [], [], []
+    for _ in range(4):  # a few rounds of candidates: some fall off the DEM or on a thermal
+        i = rng.choice(fixes, 2 * n)
+        r = cfg.bg_radius_m * np.sqrt(rng.uniform(0, 1, 2 * n))
+        a = rng.uniform(0, 2 * np.pi, 2 * n)
+        cx, cy = x[i] + r * np.sin(a), y[i] + r * np.cos(a)
+        far = np.hypot(cx[:, None] - tx[None], cy[:, None] - ty[None]).min(axis=1) >= cfg.bg_min_dist_m
+        ok = terrain.contains(cx, cy) & far
+        out_x += list(cx[ok])
+        out_y += list(cy[ok])
+        out_t += list(t[i][ok])
+        if len(out_x) >= n:
+            break
+    return np.array(out_x[:n]), np.array(out_y[:n]), np.array(out_t[:n])
 
 
 def nearest_weather(fs: FlightSamples, terrain: Terrain) -> np.ndarray:

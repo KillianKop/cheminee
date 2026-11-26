@@ -28,7 +28,7 @@ Python 3.10 or later.
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 tar -xzf data/dem/sample/rasters_COP30_sample.tar.gz -C data/dem/sample/   # sample DEM -> output_hh.asc
-pytest                                                 # 82 tests, about 20 s
+pytest                                                 # 83 tests, about 20 s
 cheminee serve data/dem/sample/output_hh.asc --open    # web interface (3D map) on http://127.0.0.1:8765
 cheminee gui data/dem/sample/output_hh.asc             # 2D interface
 ```
@@ -209,6 +209,11 @@ cheminee serve $DEM --model models/local/thermal_net.pt
 
 Put your tracks in `data/igc/` (sub-folders allowed, see [data/igc/README.md](data/igc/README.md)) and the
 network learnt from them in `models/local/`: both are ignored by git.
+
+By default the "no thermal here" samples (background pseudo-absences) are drawn anywhere on the DEM. With
+`--background near-track` they are drawn within 3 km of where the pilot was (`--background-radius-m`), away from
+the thermals of the flight: the network then has to tell a thermal from the ground around it, which is what the
+planner needs. The checkpoint records the option (`meta.dataset`).
 
 Is the network better than the analytical model? `evaluate` scores both on the flights `train` held out for
 validation (same flights, same split), with the lift field the planner would see:

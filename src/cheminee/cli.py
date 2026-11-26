@@ -422,16 +422,20 @@ def cmd_evaluate(args) -> None:
 
 
 def cmd_train(args) -> None:
+    from dataclasses import asdict
+
     from .domain import Terrain
     from .igc import find_igc
-    from .training import TrainConfig, build_dataset, train
+    from .training import DatasetConfig, TrainConfig, build_dataset, train
     from .training.train import plot_report
 
     paths = find_igc(args.igc_dir)
     if not paths:
         raise SystemExit(f"No IGC file found in {args.igc_dir}")
-    dataset = build_dataset(Terrain.from_asc(args.dem), paths)
-    _, history = train(dataset, TrainConfig(epochs=args.epochs, lr=args.lr, seed=args.seed), args.out)
+    data_cfg = DatasetConfig(background=args.background.replace("-", "_"), bg_radius_m=args.background_radius_m)
+    dataset = build_dataset(Terrain.from_asc(args.dem), paths, data_cfg)
+    cfg = TrainConfig(epochs=args.epochs, lr=args.lr, seed=args.seed)
+    _, history = train(dataset, cfg, args.out, extra_meta={"dataset": asdict(data_cfg)})
     if args.report:
         plot_report(history, args.report)
 
@@ -507,6 +511,14 @@ def main(argv=None) -> None:
     sp.add_argument("--lr", type=float, default=2e-3)
     sp.add_argument("--seed", type=int, default=0)
     sp.add_argument("--report", help="save a training report figure (PNG)")
+    sp.add_argument(
+        "--background",
+        choices=("map", "near-track"),
+        default="map",
+        help="where the 'no thermal here' samples are drawn: anywhere on the DEM (map), or around the pilot, away "
+        "from the thermals of the flight (near-track: learns to tell a thermal from the ground around it)",
+    )
+    sp.add_argument("--background-radius-m", type=float, default=3000.0, help="radius of the near-track samples")
     sp.set_defaults(func=cmd_train)
 
     sp = sub.add_parser(

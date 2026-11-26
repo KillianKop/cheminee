@@ -37,7 +37,9 @@ def split_by_flight(ds: ThermalDataset, val_fraction: float, seed: int):
     return ~val, val
 
 
-def train(ds: ThermalDataset, cfg: TrainConfig | None = None, out_path: str | None = None):
+def train(
+    ds: ThermalDataset, cfg: TrainConfig | None = None, out_path: str | None = None, extra_meta: dict | None = None
+):
     """Train a ThermalNet. Returns (model, history dict)."""
     cfg = cfg or TrainConfig()
     torch.manual_seed(cfg.seed)
@@ -112,6 +114,7 @@ def train(ds: ThermalDataset, cfg: TrainConfig | None = None, out_path: str | No
             "n_val": int(va.sum()),
             "best_val_loss": float(best),
             "val_pearson": history["val_pearson"],
+            **(extra_meta or {}),
         }
         save_checkpoint(out_path, model, cfg.hidden, meta)
         print(f"[train] checkpoint saved to {out_path}")

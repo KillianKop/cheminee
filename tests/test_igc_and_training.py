@@ -115,3 +115,30 @@ def test_evaluate_ranks_models_on_the_validation_flights(terrain, igc_dir):
     win = crop(terrain, 1000.0, 2000.0, 3000.0, 5000.0)  # a window keeps the geographic position of the cells
     lon, lat = terrain.xy_to_lonlat(2000.0, 3500.0)
     assert np.isclose(win.sample(win.z, *win.lonlat_to_xy(lon, lat)), terrain.sample(terrain.z, 2000.0, 3500.0), atol=1)
+
+
+def test_near_track_background_samples(terrain, igc_dir):
+    """`background="near_track"`: the pseudo-absences lie within the radius of where the pilot was at their time,
+    away from the thermals; the default draws them anywhere on the DEM, as before."""
+    import dataclasses
+
+    import numpy as np
+
+    from cheminee.training.dataset import BACKGROUND, THERMAL, DatasetConfig, flight_samples
+
+    track = read_igc(str(igc_dir / "synthetic_0000.igc"))
+    x, y = terrain.lonlat_to_xy(track.lon, track.lat)
+    cfg = DatasetConfig(background="near_track", bg_radius_m=1500.0, bg_min_dist_m=300.0)
+    near = flight_samples(track, terrain, cfg, np.random.default_rng(0))
+    bg = near.kind == BACKGROUND
+    assert bg.sum() > 0 and np.all(near.weight[bg] == cfg.bg_weight) and np.all(near.target[bg] == 0)
+    for bx, by, bt in zip(near.x[bg], near.y[bg], near.t_s[bg]):
+        i = int(np.argmin(np.abs(track.t - bt)))
+        assert np.hypot(bx - x[i], by - y[i]) <= 1500.0 + 1e-6
+    th = near.kind == THERMAL
+    d = np.hypot(near.x[bg][:, None] - near.x[th][None], near.y[bg][:, None] - near.y[th][None])
+    assert d.min() >= 300.0 - 1e-6
+    default = flight_samples(track, terrain, DatasetConfig(), np.random.default_rng(0))
+    assert np.ptp(default.x[default.kind == BACKGROUND]) > np.ptp(near.x[bg])  # anywhere on the map
+    with pytest.raises(ValueError):
+        flight_samples(track, terrain, dataclasses.replace(cfg, background="nope"), np.random.default_rng(0))

@@ -8,6 +8,9 @@ The flight package has its own version number (`version` in the JSON, see [docs/
 
 ### Added
 
+- `cheminee train --background near-track`: the background pseudo-absences are drawn within 3 km of the pilot,
+  away from the thermals of the flight, instead of anywhere on the DEM (`DatasetConfig.background`); the
+  checkpoint records the dataset options (`meta.dataset`).
 - `cheminee evaluate DEM IGC_DIR --model CKPT`: scores the analytical lift model and trained networks on the
   flights held out by `train` (same flights and split, shared through `training.dataset.iter_flights`), with the
   fields the planner sees: Pearson r, MAE and cross-entropy on the measured samples, and the rank of the real
