@@ -153,6 +153,20 @@ Multilayer perceptron 21 → 64 → 64 → 32 → 1, SiLU activations, sigmoid o
 inputs, weighted binary cross-entropy with continuous targets, AdamW, early stopping. 15 % of the **flights**
 (not of the points) are held out for validation.
 
+### 4.5 Evaluation (`training/evaluate.py`)
+
+`cheminee evaluate` rebuilds the samples of the flights held out by `train` (same order, same split) and asks
+each lift model for its field, as the planner sees it, on a window of the DEM around each 10 km tile of the
+flight (3 km margin), every half hour, under the weather of the nearest weather point. The background
+pseudo-absences are left out: only the thermal and low glide samples, which are measurements, are scored.
+
+- Agreement with the measured lift: Pearson r, weighted mean absolute error, weighted binary cross-entropy (the
+  training loss). The analytical model is not calibrated to the climb rates of a pilot: its error and
+  cross-entropy say little, its correlation and its ranking more.
+- Ranking: for each thermal, the percentile of the model's lift at its entry point among the cells within
+  3 km at that time. 0.5 is chance; a planner chooses its nodes among the best spots, so the share of thermals
+  in the top 10 % of the ground around also counts (chance: 10 %).
+
 ## 5. Planner (`planning/planner.py`)
 
 ### 5.1 Nodes and hourly slots

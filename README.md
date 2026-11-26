@@ -28,7 +28,7 @@ Python 3.10 or later.
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 tar -xzf data/dem/sample/rasters_COP30_sample.tar.gz -C data/dem/sample/   # sample DEM -> output_hh.asc
-pytest                                                 # 79 tests, about 20 s
+pytest                                                 # 82 tests, about 20 s
 cheminee serve data/dem/sample/output_hh.asc --open    # web interface (3D map) on http://127.0.0.1:8765
 cheminee gui data/dem/sample/output_hh.asc             # 2D interface
 ```
@@ -50,6 +50,7 @@ torch on Linux: `pip install torch --index-url https://download.pytorch.org/whl/
 | `cheminee fetch-weather IGC_DIR` | download the archived weather of every IGC flight of a directory |
 | `cheminee synth-igc DEM` | generate synthetic IGC tracks (pipeline testing) |
 | `cheminee train DEM IGC_DIR` | train the thermal network |
+| `cheminee evaluate DEM IGC_DIR --model CKPT` | compare the analytical model and trained networks on the validation flights |
 
 `cheminee <command> --help` lists every option. Common examples:
 
@@ -208,6 +209,19 @@ cheminee serve $DEM --model models/local/thermal_net.pt
 
 Put your tracks in `data/igc/` (sub-folders allowed, see [data/igc/README.md](data/igc/README.md)) and the
 network learnt from them in `models/local/`: both are ignored by git.
+
+Is the network better than the analytical model? `evaluate` scores both on the flights `train` held out for
+validation (same flights, same split), with the lift field the planner would see:
+
+```bash
+cheminee evaluate $DEM data/igc --model models/local/thermal_net.pt   # --model again to compare several
+```
+
+It prints, per model, the agreement with the measured lift (Pearson r, mean absolute error, cross-entropy) and
+what matters to the planner: where each real thermal was found, how high the model ranks that place among the
+ground within 3 km (*thermal rank*: 0.5 = chance, 1 = always the best spot; *top 10 %*: share of thermals in the
+best tenth of the ground around, chance = 10 %). A constant model gives the baseline. `--max-flights 20` for a
+quick look.
 
 Each `flight.igc` can come with a `flight.weather.json`. `fetch-weather` takes the weather at three points of
 the flight: the turnpoints of a triangle, or the takeoff, the middle and the farthest point of a straight or

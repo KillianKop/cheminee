@@ -49,7 +49,7 @@ flowchart LR
 | Domain | `domain/`, `weather/model.py`, `weather/points.py`, `weather/sounding.py`, `config.py`, `lift/base.py` | numpy, scipy | Terrain (local frame, shadows, breeze direction), sun, polar, `Route`, 3-point scoring, `Weather`, weather points and their blending weights, `LiftModel` protocol |
 | Lift models | `lift/heuristic.py`, `lift/neural.py`, `lift/features.py`, `lift/points.py` | domain (+ torch for `neural`) | Two implementations of `LiftModel`, and `PointsLift`, which blends any of them under the weather of several points |
 | Inputs | `igc/`, `weather/openmeteo.py` | domain | IGC files, thermals, estimated wind, the three weather points of a flight (`igc/sites.py`), synthetic generator; forecast → `Sounding` → `Weather` |
-| Use cases | `planning/`, `training/` | domain, `LiftModel`, `igc/` | Node graph and route search (a ceiling per node, a wind per leg), optimiser, weather points around the takeoff (`planning/sites.py`); dataset and training |
+| Use cases | `planning/`, `training/` | domain, `LiftModel`, `igc/` | Node graph and route search (a ceiling per node, a wind per leg), optimiser, weather points around the takeoff (`planning/sites.py`); dataset, training and evaluation of lift models (`training/evaluate.py`) |
 | Presentation | `viz/`, `export/`, `web/`, `cli.py` | everything else | matplotlib GUI, plotly 3D scene, emagram, flight package for the vautour app, local web interface, command line |
 
 ## Dependency rule

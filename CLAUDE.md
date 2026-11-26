@@ -17,7 +17,7 @@ The physics is explained in [docs/model.md](docs/model.md). Read it before chang
 ```bash
 pip install -e ".[dev]"                                # once; CPU torch is enough
 tar -xzf data/dem/sample/rasters_COP30_sample.tar.gz -C data/dem/sample/   # once -> data/dem/sample/output_hh.asc
-pytest                                                 # 79 tests, ~20 s, no network
+pytest                                                 # 82 tests, ~20 s, no network
 pytest tests/test_planner.py -k triangle               # one area
 ruff check . && ruff format --check .                  # lint + format check (CI runs both)
 ruff check --fix . && ruff format .                    # fix

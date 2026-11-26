@@ -393,6 +393,34 @@ def cmd_synth(args) -> None:
     synthetic.generate(Terrain.from_asc(args.dem), args.out, args.n, seed=args.seed)
 
 
+def cmd_evaluate(args) -> None:
+    """Compare the analytical lift model and trained networks on the validation flights of `train`."""
+    from .domain import Terrain
+    from .igc import find_igc
+    from .lift import HeuristicLift
+    from .training.evaluate import EvalConfig, evaluate, print_scores
+
+    paths = find_igc(args.igc_dir)
+    if not paths:
+        raise SystemExit(f"No IGC file found in {args.igc_dir}")
+    models = {"heuristic": lambda t, p: HeuristicLift(t, p)}
+    split = {}
+    if args.model:
+        from .lift.neural import NeuralLift, load_checkpoint
+
+        for path in args.model:
+            net, meta = load_checkpoint(path)
+            models[path] = lambda t, p, net=net: NeuralLift(t, p, net)
+            split = split or meta.get("config", {})  # the split of the (first) network: same validation flights
+    cfg = EvalConfig(
+        val_fraction=split.get("val_fraction", EvalConfig.val_fraction),
+        seed=split.get("seed", EvalConfig.seed),
+        max_flights=args.max_flights,
+        radius_m=args.radius_m,
+    )
+    print_scores(evaluate(Terrain.from_asc(args.dem), paths, models, cfg))
+
+
 def cmd_train(args) -> None:
     from .domain import Terrain
     from .igc import find_igc
@@ -480,6 +508,16 @@ def main(argv=None) -> None:
     sp.add_argument("--seed", type=int, default=0)
     sp.add_argument("--report", help="save a training report figure (PNG)")
     sp.set_defaults(func=cmd_train)
+
+    sp = sub.add_parser(
+        "evaluate", help="compare the analytical lift model and trained networks on the validation flights"
+    )
+    sp.add_argument("dem", help="the DEM the networks were trained on")
+    sp.add_argument("igc_dir", help="the IGC directory they were trained on (same flights, same split)")
+    sp.add_argument("--model", action="append", help="ThermalNet checkpoint to compare (repeat for several)")
+    sp.add_argument("--max-flights", type=int, help="evaluate only the first N validation flights (quicker)")
+    sp.add_argument("--radius-m", type=float, default=3000.0, help="ranking of a thermal among the ground around")
+    sp.set_defaults(func=cmd_evaluate)
 
     args = parser.parse_args(argv)
     args.func(args)

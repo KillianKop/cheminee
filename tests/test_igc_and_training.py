@@ -80,3 +80,35 @@ def test_find_igc_lists_each_file_once(tmp_path):
     found = find_igc(tmp_path)
     assert [p.name for p in found] == ["b.IGC", "c.Igc", "a.igc"]
     assert find_igc(tmp_path / "missing") == []
+
+
+def test_evaluate_ranks_models_on_the_validation_flights(terrain, igc_dir):
+    """`evaluate` scores every model on the same held-out flights; a model that knows the true lift (the
+    heuristic that generated the synthetic tracks) must rank the real thermals well above chance, and a flat
+    field must not."""
+    import numpy as np
+
+    from cheminee.lift import HeuristicLift
+    from cheminee.training.evaluate import EvalConfig, crop, evaluate
+    from cheminee.training.train import validation_flights
+
+    class Flat:
+        name = "flat"
+
+        def __init__(self, t, p):
+            self.shape = t.z.shape
+
+        def field(self, hour):
+            return np.full(self.shape, 0.3, dtype=np.float32)
+
+    paths = sorted(igc_dir.glob("*.igc"))
+    models = {"heuristic": lambda t, p: HeuristicLift(t, p), "flat": Flat}
+    res = evaluate(terrain, paths, models, EvalConfig(val_fraction=0.5, tile_m=3000.0, margin_m=1000.0))
+    s = res["scores"]
+    assert res["n_flights"] == len(validation_flights(range(8), 0.5, 0)) and res["n_samples"] > 50
+    assert s["heuristic"]["n_thermals"] > 0 and s["heuristic"]["rank_percentile"] > 0.6
+    assert s["flat"]["rank_percentile"] == 0.5 and np.isnan(s["flat"]["pearson"])
+    assert set(s) == {"heuristic", "flat", "constant (mean target)"}
+    win = crop(terrain, 1000.0, 2000.0, 3000.0, 5000.0)  # a window keeps the geographic position of the cells
+    lon, lat = terrain.xy_to_lonlat(2000.0, 3500.0)
+    assert np.isclose(win.sample(win.z, *win.lonlat_to_xy(lon, lat)), terrain.sample(terrain.z, 2000.0, 3500.0), atol=1)
