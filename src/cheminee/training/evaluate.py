@@ -12,6 +12,9 @@ time of the samples and with the weather of the nearest weather point. Two famil
 
 from __future__ import annotations
 
+import os
+import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -57,64 +60,122 @@ def _rank(field: np.ndarray, win: Terrain, x: float, y: float, radius_m: float) 
     return float(np.mean(around < value) + 0.5 * np.mean(around == value))
 
 
+def _flight_task(terrain: Terrain, track, fs, cfg: EvalConfig) -> dict:
+    """What a worker needs to score one flight: small DEM windows around its tiles and its measured samples."""
+    keep = np.flatnonzero(fs.kind != BACKGROUND)
+    near = nearest_weather(fs, terrain)[keep]
+    x, y = fs.x[keep], fs.y[keep]
+    bins = np.round(fs.t_s[keep] / 3600.0 / cfg.bin_h) * cfg.bin_h
+    # one ranking per thermal: its first sample (all the samples of a thermal share its entry point)
+    first = np.zeros(len(fs.x), dtype=bool)
+    is_thermal = np.flatnonzero(fs.kind == THERMAL)
+    first[is_thermal[np.unique(fs.thermal[is_thermal], return_index=True)[1]]] = True
+    first = first[keep]
+    lon, lat = terrain.xy_to_lonlat(x, y)
+    tx, ty = np.floor(x / cfg.tile_m), np.floor(y / cfg.tile_m)
+    tiles = []
+    for a, b in sorted(set(zip(tx.tolist(), ty.tolist()))):
+        idx = np.flatnonzero((tx == a) & (ty == b))
+        m, size = cfg.margin_m, cfg.tile_m
+        win = crop(terrain, a * size - m, b * size - m, (a + 1) * size + m, (b + 1) * size + m)
+        tiles.append(dict(z=win.z, lon0=win.lon0, lat0=win.lat0, cs=win.cell_deg, idx=idx))
+    weathers = [q.weather for q in fs.points] if len(fs.points) > 1 else [fs.weather]
+    return dict(
+        day=track.day_of_year, tiles=tiles, near=near, bins=bins, first=first, lon=lon, lat=lat,
+        weathers=weathers, target=fs.target[keep], weight=fs.weight[keep],
+    )  # fmt: skip
+
+
+def _score_flight(task: dict, models: dict, radius_m: float) -> tuple[dict, dict, int]:
+    """Predictions of every model at the measured samples of a flight, and the ranks of its thermals."""
+    n = len(task["target"])
+    out = {name: np.full(n, np.nan) for name in models}
+    ranks = {name: [] for name in models}
+    n_fields = 0
+    for tile in task["tiles"]:
+        win = Terrain(tile["z"], tile["lon0"], tile["lat0"], tile["cs"])
+        idx = tile["idx"]
+        wx, wy = win.lonlat_to_xy(task["lon"][idx], task["lat"][idx])
+        for q in np.unique(task["near"][idx]):
+            params = Params(day_of_year=task["day"], utc_offset=0.0, weather=task["weathers"][q])
+            lifts = {name: factory(win, params) for name, factory in models.items()}
+            in_q = task["near"][idx] == q
+            for b in np.unique(task["bins"][idx][in_q]):
+                sel = np.flatnonzero(in_q & (task["bins"][idx] == b))
+                for name, lift in lifts.items():
+                    field = lift.field(float(b))  # utc_offset 0: local hour = UTC hour
+                    n_fields += 1
+                    out[name][idx[sel]] = win.sample(field, wx[sel], wy[sel])
+                    for i in sel[task["first"][idx[sel]]]:
+                        ranks[name].append(_rank(field, win, float(wx[i]), float(wy[i]), radius_m))
+    return out, ranks, n_fields
+
+
+def _init_worker() -> None:
+    """One thread per worker: the workers already share the cores."""
+    os.environ["OMP_NUM_THREADS"] = "1"
+    if "torch" in sys.modules:  # imported with the package, before this initializer
+        sys.modules["torch"].set_num_threads(1)
+
+
 def evaluate(
     terrain: Terrain,
     igc_paths: list,
     models: dict[str, Callable],
     cfg: EvalConfig | None = None,
     data_cfg: DatasetConfig | None = None,
+    workers: int = 1,
 ) -> dict:
-    """Scores of each model `name -> factory(terrain, params) -> LiftModel` on the validation flights."""
+    """Scores of each model `name -> factory(terrain, params) -> LiftModel` on the validation flights.
+
+    With `workers` > 1 the flights are scored in parallel processes; the factories must then be picklable
+    (a class such as `HeuristicLift`, or `lift.neural.NeuralFactory`)."""
     from .train import validation_flights
 
     cfg, data_cfg = cfg or EvalConfig(), data_cfg or DatasetConfig()
+    t0 = time.perf_counter()
     flights = list(iter_flights(terrain, igc_paths, data_cfg))
     val = set(validation_flights([k for k, *_ in flights], cfg.val_fraction, cfg.seed).tolist())
     chosen = [f for f in flights if f[0] in val][: cfg.max_flights]
-    print(f"[evaluate] {len(flights)} usable flights, {len(val)} held out for validation, {len(chosen)} evaluated")
-
+    print(
+        f"[evaluate] {len(flights)} usable flights, {len(val)} held out for validation, {len(chosen)} evaluated, "
+        f"{workers} worker(s) ({time.perf_counter() - t0:.0f} s to read the flights)"
+    )
+    tasks = (_flight_task(terrain, track, fs, cfg) for _, _, track, fs in chosen)
     pred = {name: [] for name in models}
     ranks = {name: [] for name in models}
     targets, weights = [], []
-    n_fields = 0
-    for n_done, (_, _, track, fs) in enumerate(chosen, 1):
-        keep = fs.kind != BACKGROUND
-        near = nearest_weather(fs, terrain)
-        tiles = np.floor(fs.x / cfg.tile_m).astype(int) * 100000 + np.floor(fs.y / cfg.tile_m).astype(int)
-        hours = fs.t_s / 3600.0
-        bins = np.round(hours / cfg.bin_h) * cfg.bin_h
-        out = {name: np.full(len(fs.x), np.nan) for name in models}
-        # one ranking per thermal: its first sample (all the samples of a thermal share its entry point)
-        first_of_thermal = np.zeros(len(fs.x), dtype=bool)
-        is_thermal = np.flatnonzero(fs.kind == THERMAL)
-        first_of_thermal[is_thermal[np.unique(fs.thermal[is_thermal], return_index=True)[1]]] = True
-        lon, lat = terrain.xy_to_lonlat(fs.x, fs.y)
-        for tile in np.unique(tiles[keep]):
-            in_tile = keep & (tiles == tile)
-            i0 = np.flatnonzero(in_tile)[0]
-            tx, ty = np.floor(fs.x[i0] / cfg.tile_m), np.floor(fs.y[i0] / cfg.tile_m)
-            m, size = cfg.margin_m, cfg.tile_m
-            win = crop(terrain, tx * size - m, ty * size - m, (tx + 1) * size + m, (ty + 1) * size + m)
-            wx, wy = win.lonlat_to_xy(lon, lat)
-            for q in np.unique(near[in_tile]):
-                weather = fs.points[q].weather if len(fs.points) > 1 else fs.weather
-                params = Params(day_of_year=track.day_of_year, utc_offset=0.0, weather=weather)
-                lifts = {name: factory(win, params) for name, factory in models.items()}
-                group = in_tile & (near == q)
-                for b in np.unique(bins[group]):
-                    sel = np.flatnonzero(group & (bins == b))
-                    for name, lift in lifts.items():
-                        field = lift.field(float(b))  # utc_offset 0: local hour = UTC hour
-                        n_fields += 1
-                        out[name][sel] = win.sample(field, wx[sel], wy[sel])
-                        for i in sel[first_of_thermal[sel]]:
-                            ranks[name].append(_rank(field, win, float(wx[i]), float(wy[i]), cfg.radius_m))
+    n_fields = n_done = 0
+
+    def collect(task, result) -> None:
+        nonlocal n_fields, n_done
+        out, rk, nf = result
         for name in models:
-            pred[name].append(out[name][keep])
-        targets.append(fs.target[keep])
-        weights.append(fs.weight[keep])
+            pred[name].append(out[name])
+            ranks[name] += rk[name]
+        targets.append(task["target"])
+        weights.append(task["weight"])
+        n_fields += nf
+        n_done += 1
         if n_done % 10 == 0 or n_done == len(chosen):
-            print(f"[evaluate] {n_done}/{len(chosen)} flights, {n_fields} fields computed")
+            print(f"[evaluate] {n_done}/{len(chosen)} flights, {n_fields} fields ({time.perf_counter() - t0:.0f} s)")
+
+    if workers <= 1:
+        for task in tasks:
+            collect(task, _score_flight(task, models, cfg.radius_m))
+    else:
+        from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+
+        with ProcessPoolExecutor(workers, initializer=_init_worker) as pool:
+            running = {}
+            for task in tasks:  # a few flights ahead of the workers only: the DEM windows stay few in memory
+                running[pool.submit(_score_flight, task, models, cfg.radius_m)] = task
+                if len(running) >= 2 * workers:
+                    done, _ = wait(running, return_when=FIRST_COMPLETED)
+                    for fut in done:
+                        collect(running.pop(fut), fut.result())
+            for fut in list(running):
+                collect(running.pop(fut), fut.result())
 
     y, w = np.concatenate(targets), np.concatenate(weights)
     scores = {}

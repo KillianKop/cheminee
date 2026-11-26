@@ -403,14 +403,14 @@ def cmd_evaluate(args) -> None:
     paths = find_igc(args.igc_dir)
     if not paths:
         raise SystemExit(f"No IGC file found in {args.igc_dir}")
-    models = {"heuristic": lambda t, p: HeuristicLift(t, p)}
+    models = {"heuristic": HeuristicLift}  # classes and NeuralFactory: picklable for the parallel workers
     split = {}
     if args.model:
-        from .lift.neural import NeuralLift, load_checkpoint
+        from .lift.neural import NeuralFactory, load_checkpoint
 
         for path in args.model:
-            net, meta = load_checkpoint(path)
-            models[path] = lambda t, p, net=net: NeuralLift(t, p, net)
+            meta = load_checkpoint(path)[1]
+            models[path] = NeuralFactory(path)
             split = split or meta.get("config", {})  # the split of the (first) network: same validation flights
     cfg = EvalConfig(
         val_fraction=split.get("val_fraction", EvalConfig.val_fraction),
@@ -418,7 +418,7 @@ def cmd_evaluate(args) -> None:
         max_flights=args.max_flights,
         radius_m=args.radius_m,
     )
-    print_scores(evaluate(Terrain.from_asc(args.dem), paths, models, cfg))
+    print_scores(evaluate(Terrain.from_asc(args.dem), paths, models, cfg, workers=args.workers))
 
 
 def cmd_train(args) -> None:
@@ -517,6 +517,13 @@ def main(argv=None) -> None:
     sp.add_argument("--model", action="append", help="ThermalNet checkpoint to compare (repeat for several)")
     sp.add_argument("--max-flights", type=int, help="evaluate only the first N validation flights (quicker)")
     sp.add_argument("--radius-m", type=float, default=3000.0, help="ranking of a thermal among the ground around")
+    sp.add_argument(
+        "--workers",
+        type=int,
+        default=max(1, (os.cpu_count() or 4) // 4),
+        help="parallel processes (default: a quarter of the logical CPUs; the network fields are limited by "
+        "memory bandwidth, more processes do not go faster: 3 and 6 take the same time on a 6-core laptop)",
+    )
     sp.set_defaults(func=cmd_evaluate)
 
     args = parser.parse_args(argv)

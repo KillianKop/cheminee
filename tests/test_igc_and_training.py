@@ -109,6 +109,9 @@ def test_evaluate_ranks_models_on_the_validation_flights(terrain, igc_dir):
     assert s["heuristic"]["n_thermals"] > 0 and s["heuristic"]["rank_percentile"] > 0.6
     assert s["flat"]["rank_percentile"] == 0.5 and np.isnan(s["flat"]["pearson"])
     assert set(s) == {"heuristic", "flat", "constant (mean target)"}
+    # parallel workers (picklable factories) give the same scores
+    two = evaluate(terrain, paths, {"heuristic": HeuristicLift}, EvalConfig(0.5, 0, 3000.0, 1000.0), workers=2)
+    assert two["scores"]["heuristic"] == pytest.approx(s["heuristic"], nan_ok=True)
     win = crop(terrain, 1000.0, 2000.0, 3000.0, 5000.0)  # a window keeps the geographic position of the cells
     lon, lat = terrain.xy_to_lonlat(2000.0, 3500.0)
     assert np.isclose(win.sample(win.z, *win.lonlat_to_xy(lon, lat)), terrain.sample(terrain.z, 2000.0, 3500.0), atol=1)

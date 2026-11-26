@@ -11,7 +11,10 @@ The flight package has its own version number (`version` in the JSON, see [docs/
 - `cheminee evaluate DEM IGC_DIR --model CKPT`: scores the analytical lift model and trained networks on the
   flights held out by `train` (same flights and split, shared through `training.dataset.iter_flights`), with the
   fields the planner sees: Pearson r, MAE and cross-entropy on the measured samples, and the rank of the real
-  thermals among the ground around them (`training/evaluate.py`).
+  thermals among the ground around them (`training/evaluate.py`). Flights are scored in parallel processes
+  (`--workers`, a quarter of the logical CPUs by default) on small DEM windows, so memory stays low.
+- Lift features: the sun position is computed once per distinct hour instead of once per cell (identical
+  values); a field of the neural lift model is about 30 % faster, in the planner too.
 - Weather points. With a forecast, the planner takes the weather at 1 to 10 points: the takeoff and points
   placed by the user, or around the takeoff (3 by default: a triangle; `--weather-points N`,
   `--weather-point LON LAT` repeated). Web: *Click adds a weather point* places numbered blue points on the map

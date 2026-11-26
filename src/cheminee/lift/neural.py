@@ -73,3 +73,18 @@ class NeuralLift:
         out = torch.cat([torch.sigmoid(self.model(chunk)) for chunk in torch.from_numpy(x).split(131072)])
         lift = out.numpy().reshape(t.ny, t.nx)
         return np.clip(ndimage.gaussian_filter(lift, self.sigma), 0, 1).astype(np.float32)
+
+
+class NeuralFactory:
+    """Lift factory `(terrain, params) -> NeuralLift` from a checkpoint path, picklable (parallel workers); the
+    checkpoint is loaded once per process."""
+
+    _nets: dict = {}
+
+    def __init__(self, path: str):
+        self.path = path
+
+    def __call__(self, terrain: Terrain, params: Params) -> NeuralLift:
+        if self.path not in self._nets:
+            self._nets[self.path] = load_checkpoint(self.path)[0]
+        return NeuralLift(terrain, params, self._nets[self.path])

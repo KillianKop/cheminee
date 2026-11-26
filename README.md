@@ -221,7 +221,8 @@ It prints, per model, the agreement with the measured lift (Pearson r, mean abso
 what matters to the planner: where each real thermal was found, how high the model ranks that place among the
 ground within 3 km (*thermal rank*: 0.5 = chance, 1 = always the best spot; *top 10 %*: share of thermals in the
 best tenth of the ground around, chance = 10 %). A constant model gives the baseline. `--max-flights 20` for a
-quick look.
+quick look; the flights are scored in parallel processes (`--workers`, 3 on a 6-core laptop: about 18 min
+for 177 validation flights on a 150 km DEM).
 
 Each `flight.igc` can come with a `flight.weather.json`. `fetch-weather` takes the weather at three points of
 the flight: the turnpoints of a triangle, or the takeoff, the middle and the farthest point of a straight or
