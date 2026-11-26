@@ -60,9 +60,10 @@ def assemble(static: np.ndarray, day_of_year, hour_utc, lat_deg: float, lon_deg:
     nz = np.cos(slope)
 
     cols = [static]
+    hours, inverse = np.unique(hour, return_inverse=True)  # the sun depends on time only: once per distinct hour
     for lag in SUN_LAGS_H:
-        az, el = sun_position(day_of_year, hour - lag, lat_deg, lon_deg)
-        s = sun_vector(az, el)
+        az, el = sun_position(day_of_year, hours - lag, lat_deg, lon_deg)
+        s, el = sun_vector(az, el)[inverse], el[inverse]
         cols.append((np.clip(nx * s[:, 0] + ny * s[:, 1] + nz * s[:, 2], 0, 1) * (el > 0))[:, None])
         if lag == 0.0:
             sin_el = np.clip(np.sin(np.radians(el)), 0, 1)
