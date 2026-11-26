@@ -36,6 +36,7 @@ cheminee-kk7 plan data/dem/sample/output_hh.asc               # same options as 
 cheminee-kk7 gui data/dem/sample/output_hh.asc
 cheminee-kk7 serve data/dem/sample/output_hh.asc              # web interface with "cheminee + kk7" as lift model
 cheminee-kk7 fetch data/dem/sample/output_hh.asc              # cache every season over the DEM (offline use)
+cheminee-kk7 evaluate $DEM data/igc --model models/local/thermal_net.pt   # cheminee evaluate + kk7 models
 cheminee-kk7 plan data/dem/sample/output_hh.asc --kk7-offline # cached tiles only, no network
 pytest contrib/kk7/tests                                      # no network
 ```
@@ -57,6 +58,18 @@ The first run downloads 3 layers x 12 tiles for the sample DEM (about 15 s). The
 | `--kk7-offline` | off | cached tiles only; missing tiles count as "no data" |
 
 `--model` (the ThermalNet checkpoint) still works: kk7 is blended into whichever base model cheminee builds.
+
+## Evaluation against flown tracks
+
+`cheminee-kk7 evaluate` runs `cheminee evaluate` (same options, same validation flights) with three extra
+models: `kk7 climatology` (the kk7 probability alone, season of the flight, time of day interpolated),
+`heuristic + kk7 <mode>` (the analytical model reshaped by kk7, `--kk7-blend`, `--kk7-mode`). Before scoring it
+downloads, once and rate-limited, only the tiles over the evaluated windows (the season of each flight, three
+times of day) and stops if more than `--kk7-max-tiles` (3000) are missing from the cache; the workers then read
+the cache only.
+
+kk7 is built from flown tracks, possibly the very flights you evaluate on: its scores are an upper bound of
+what it would do on a new flight, unlike the network, which never saw the validation flights.
 
 ## How it works
 

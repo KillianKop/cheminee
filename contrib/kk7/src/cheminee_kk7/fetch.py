@@ -80,7 +80,12 @@ def fetch_tile(
 
 
 def fetch_layer(
-    tiles: list[tuple[int, int]], key: str, zoom: int, cache_dir: str = DEFAULT_CACHE, offline: bool = False
+    tiles: list[tuple[int, int]],
+    key: str,
+    zoom: int,
+    cache_dir: str = DEFAULT_CACHE,
+    offline: bool = False,
+    verbose: bool = True,
 ) -> dict[tuple[int, int], np.ndarray | None]:
     """Decoded tiles of one kk7 layer (`<season>_<time>`, e.g. `jul_07`) over a list of XYZ tiles."""
     t0 = time.perf_counter()
@@ -88,10 +93,11 @@ def fetch_layer(
     for x, y in tiles:
         out[(x, y)], source = fetch_tile(key, zoom, x, y, cache_dir, offline)
         sources[source] += 1
-    print(
-        f"[kk7] layer {key} z{zoom}: {len(tiles)} tiles ({sources['cache']} cached, {sources['download']} "
-        f"downloaded, {sources['missing']} without data) in {time.perf_counter() - t0:.1f} s"
-    )
+    if verbose:
+        print(
+            f"[kk7] layer {key} z{zoom}: {len(tiles)} tiles ({sources['cache']} cached, {sources['download']} "
+            f"downloaded, {sources['missing']} without data) in {time.perf_counter() - t0:.1f} s"
+        )
     return out
 
 

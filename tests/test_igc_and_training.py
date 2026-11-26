@@ -227,3 +227,20 @@ def test_sample_weights_by_kind_and_thermal_auc(terrain, igc_dir):
     assert thermal_auc(np.zeros(5), kind) == 0.5
     assert np.isnan(thermal_auc(np.zeros(2), kind[:2]))
 
+
+def test_evaluate_prepare_gets_every_window(terrain, igc_dir):
+    """`prepare` is called once, before scoring, with boxes that contain every scored sample."""
+    from cheminee.lift import HeuristicLift
+    from cheminee.training.evaluate import EvalConfig, evaluate
+
+    seen = []
+    paths = sorted(igc_dir.glob("*.igc"))
+    cfg = EvalConfig(val_fraction=0.5, tile_m=3000.0, margin_m=1000.0)
+    evaluate(terrain, paths, {"heuristic": HeuristicLift}, cfg, prepare=seen.append)
+    assert len(seen) == 1 and seen[0]
+    lon_lo, lat_lo, lon_hi, lat_hi = terrain.xy_to_lonlat(0.0, 0.0) + terrain.xy_to_lonlat(
+        terrain.width, terrain.height
+    )
+    for lon0, lat0, lon1, lat1, day in seen[0]:
+        assert lon_lo - 1e-9 <= lon0 < lon1 <= lon_hi + 1e-9 and lat_lo - 1e-9 <= lat0 < lat1 <= lat_hi + 1e-9
+        assert 1 <= day <= 366

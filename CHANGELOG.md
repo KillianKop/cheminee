@@ -13,6 +13,10 @@ The flight package has its own version number (`version` in the JSON, see [docs/
   thermal samples about 15 to 1 and drove the loss; the background samples weighed about 1.5 % of it. `train`
   also reports the *thermal AUC* of the validation flights (does a thermal sample score above a background
   sample?), recorded in the checkpoint (`meta.val_thermal_auc`).
+- `cheminee-kk7 evaluate` (contrib add-on): `cheminee evaluate` with the kk7 climatology alone and blended into
+  the analytical model as extra models. It downloads once, before scoring, only the kk7 tiles over the evaluated
+  windows (`evaluate(prepare=...)` hands them over; `--kk7-max-tiles` caps the download); the workers read the
+  cache (`Kk7Factory`, picklable).
 - `evaluate` is about 3.5 times faster: `NeuralLift.field(hour, mask)` runs the network on the cells of a mask
   (and those within reach of the smoothing) only, with the values of the full field there, and the evaluation
   asks for the cells it reads; `train` records the validation flights in the checkpoint (`meta.validation`:

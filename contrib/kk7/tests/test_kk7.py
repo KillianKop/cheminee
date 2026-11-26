@@ -219,3 +219,31 @@ def test_kk7_lift_choice_in_the_web_interface(terrain, params, tmp_path, monkeyp
     job = app.job(job_id)
     assert job["status"] == "done", job.get("error")
     assert "kk7" in job["result"]["lift_name"] and job["result"]["lift_attribution"] == KK7_NOTICE
+
+
+def test_evaluation_factory_and_prefetch(terrain, params, tmp_path, monkeypatch):
+    """`prefetch` downloads the tiles of the windows once; `Kk7Factory` then reads them offline, survives
+    pickling (parallel workers) and gives the climatology alone or blended into a base model."""
+    import io
+    import pickle
+
+    from cheminee_kk7.lift import Kk7Climatology, Kk7Factory, prefetch
+
+    buf = io.BytesIO()
+    Image.fromarray(tiles.encode_tile(np.full((256, 256), 0.3)), "RGBA").save(buf, format="PNG")
+    calls = []
+    monkeypatch.setattr(fetch, "_get", lambda url, accept=None: calls.append(url) or buf.getvalue())
+    windows = [(*tiles.terrain_bbox(terrain), params.day_of_year)]
+    prefetch(windows, 12, str(tmp_path))
+    n = len(calls)
+    keys = layer_keys(tiles.nearest_season(params.day_of_year), "auto")
+    assert n == len(keys) * len(tiles.tiles_covering(*tiles.terrain_bbox(terrain), 12))
+    prefetch(windows, 12, str(tmp_path))
+    assert len(calls) == n  # cached: no second request
+    alone = pickle.loads(pickle.dumps(Kk7Factory(zoom=12, cache_dir=str(tmp_path))))(terrain, params)
+    assert isinstance(alone, Kk7Climatology)
+    assert alone.field(14.0).mean() == pytest.approx(0.3, abs=0.01)
+    blended = pickle.loads(pickle.dumps(Kk7Factory(HeuristicLift, 0.5, zoom=12, cache_dir=str(tmp_path))))
+    lift = blended(terrain, params)
+    assert isinstance(lift, Kk7Lift) and np.all(lift.field(14.0) >= lift.base.field(14.0) - 1e-6)
+    assert len(calls) == n  # offline by default

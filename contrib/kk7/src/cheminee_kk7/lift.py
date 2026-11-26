@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 
 import numpy as np
@@ -34,11 +35,12 @@ def load_layers(
     zoom: int = tiles.MAX_ZOOM,
     cache_dir: str = fetch.DEFAULT_CACHE,
     offline: bool = False,
+    verbose: bool = True,
 ) -> dict[str, np.ndarray]:
     """kk7 probability of each layer on the terrain grid (downloads only the tiles over the DEM)."""
     cover = tiles.tiles_covering(*tiles.terrain_bbox(terrain), zoom)
     return {
-        key: tiles.to_terrain_grid(terrain, fetch.fetch_layer(cover, key, zoom, cache_dir, offline), zoom)
+        key: tiles.to_terrain_grid(terrain, fetch.fetch_layer(cover, key, zoom, cache_dir, offline, verbose), zoom)
         for key in keys
     }
 
@@ -144,3 +146,85 @@ def kk7_factory(
         return Kk7Lift(terrain, params, base, loaded[cache_key], blend, s, time_of_day, mode)
 
     return factory
+
+
+class Kk7Climatology:
+    """The kk7 thermal probability alone as a lift field (no terrain, sun or weather model): what the
+    climatology says about where thermals are, to compare with the cheminee models."""
+
+    def __init__(self, terrain: Terrain, params: Params, layers: dict[str, np.ndarray], season: str):
+        self.t, self.p, self.layers, self.season = terrain, params, layers, season
+        self.sunrise = sunrise_local(terrain, params)
+        self.name = f"kk7 {season}"
+
+    def field(self, hour_local: float) -> np.ndarray:
+        w = tiles.time_of_day_weights(hour_local - self.sunrise)
+        mix = sum(v * self.layers[f"{self.season}_{t}"] for t, v in w.items() if v > 0)
+        return np.clip(mix, 0.0, 1.0).astype(np.float32)
+
+
+class Kk7Factory:
+    """Picklable lift factory `(terrain, params)` for parallel evaluation: the kk7 climatology alone
+    (`base=None`) or blended into a base factory (which must be picklable too). Tiles are read from the cache
+    (`offline` by default: fetch them first with `prefetch`); the layers of the last windows are kept."""
+
+    def __init__(
+        self,
+        base=None,
+        blend: float = 0.8,
+        mode: str = "boost",
+        zoom: int = tiles.MAX_ZOOM,
+        cache_dir: str = fetch.DEFAULT_CACHE,
+        offline: bool = True,
+    ):
+        self.base, self.blend, self.mode = base, blend, mode
+        self.zoom, self.cache_dir, self.offline = zoom, cache_dir, offline
+        self._layers: dict = {}
+
+    def __getstate__(self):
+        return {**self.__dict__, "_layers": {}}
+
+    def __call__(self, terrain: Terrain, params: Params):
+        season = tiles.nearest_season(params.day_of_year)
+        keys = layer_keys(season, "auto")
+        key = (tiles.terrain_bbox(terrain), terrain.z.shape, tuple(keys))
+        if key not in self._layers:
+            if len(self._layers) >= 8:  # the windows of one flight are asked for in a row
+                self._layers.pop(next(iter(self._layers)))
+            self._layers[key] = load_layers(terrain, keys, self.zoom, self.cache_dir, self.offline, verbose=False)
+        layers = self._layers[key]
+        if self.base is None:
+            return Kk7Climatology(terrain, params, layers, season)
+        return Kk7Lift(terrain, params, self.base(terrain, params), layers, self.blend, season, "auto", self.mode)
+
+
+def prefetch(
+    windows: list[tuple[float, float, float, float, int]],
+    zoom: int = tiles.MAX_ZOOM,
+    cache_dir: str = fetch.DEFAULT_CACHE,
+    offline: bool = False,
+    max_tiles: int | None = None,
+) -> None:
+    """Download once (rate-limited, cached) the kk7 tiles of the season of each window (lon_min, lat_min, lon_max,
+    lat_max, day of year): only the tiles over the windows, not the whole DEM. Refuses to start above `max_tiles`
+    tiles not cached yet (kk7 asks for no bulk downloads)."""
+    wanted: dict[str, set] = {}
+    for lon0, lat0, lon1, lat1, day in windows:
+        cover = tiles.tiles_covering(lon0, lat0, lon1, lat1, zoom)
+        for key in layer_keys(tiles.nearest_season(day), "auto"):
+            wanted.setdefault(key, set()).update(cover)
+    n = sum(len(v) for v in wanted.values())
+    new = sum(
+        not os.path.exists(fetch.tile_path(cache_dir, key, zoom, x, y))
+        and not os.path.exists(fetch.tile_path(cache_dir, key, zoom, x, y) + ".empty")
+        for key, cover in wanted.items()
+        for x, y in cover
+    )
+    print(f"[kk7] {len(windows)} windows need {n} tiles over {len(wanted)} layers, {new} not cached")
+    if not offline and max_tiles is not None and new > max_tiles:
+        raise SystemExit(
+            f"[kk7] {new} tiles to download, more than --kk7-max-tiles {max_tiles}: raise it, or use "
+            "--max-flights / --kk7-zoom 11"
+        )
+    for key, cover in sorted(wanted.items()):
+        fetch.fetch_layer(sorted(cover), key, zoom, cache_dir, offline)

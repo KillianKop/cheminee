@@ -393,12 +393,12 @@ def cmd_synth(args) -> None:
     synthetic.generate(Terrain.from_asc(args.dem), args.out, args.n, seed=args.seed)
 
 
-def cmd_evaluate(args) -> None:
-    """Compare the analytical lift model and trained networks on the validation flights of `train`."""
+def evaluate_setup(args):
+    """(terrain, IGC paths, models, EvalConfig, validation flights) of `cheminee evaluate` (add-ons reuse it)."""
     from .domain import Terrain
     from .igc import find_igc
     from .lift import HeuristicLift
-    from .training.evaluate import EvalConfig, evaluate, print_scores
+    from .training.evaluate import EvalConfig
 
     paths = find_igc(args.igc_dir)
     if not paths:
@@ -425,8 +425,30 @@ def cmd_evaluate(args) -> None:
         max_flights=args.max_flights,
         radius_m=args.radius_m,
     )
-    terrain = Terrain.from_asc(args.dem)
+    return Terrain.from_asc(args.dem), paths, models, cfg, validation
+
+
+def cmd_evaluate(args) -> None:
+    """Compare the analytical lift model and trained networks on the validation flights of `train`."""
+    from .training.evaluate import evaluate, print_scores
+
+    terrain, paths, models, cfg, validation = evaluate_setup(args)
     print_scores(evaluate(terrain, paths, models, cfg, workers=args.workers, validation=validation))
+
+
+def add_evaluate_args(sp: argparse.ArgumentParser) -> None:
+    sp.add_argument("dem", help="the DEM the networks were trained on")
+    sp.add_argument("igc_dir", help="the IGC directory they were trained on (same flights, same split)")
+    sp.add_argument("--model", action="append", help="ThermalNet checkpoint to compare (repeat for several)")
+    sp.add_argument("--max-flights", type=int, help="evaluate only the first N validation flights (quicker)")
+    sp.add_argument("--radius-m", type=float, default=3000.0, help="ranking of a thermal among the ground around")
+    sp.add_argument(
+        "--workers",
+        type=int,
+        default=max(1, (os.cpu_count() or 4) // 4),
+        help="parallel processes (default: a quarter of the logical CPUs; the network fields are limited by "
+        "memory bandwidth, more processes do not go faster: 3 and 6 take the same time on a 6-core laptop)",
+    )
 
 
 def cmd_train(args) -> None:
@@ -554,18 +576,7 @@ def main(argv=None) -> None:
     sp = sub.add_parser(
         "evaluate", help="compare the analytical lift model and trained networks on the validation flights"
     )
-    sp.add_argument("dem", help="the DEM the networks were trained on")
-    sp.add_argument("igc_dir", help="the IGC directory they were trained on (same flights, same split)")
-    sp.add_argument("--model", action="append", help="ThermalNet checkpoint to compare (repeat for several)")
-    sp.add_argument("--max-flights", type=int, help="evaluate only the first N validation flights (quicker)")
-    sp.add_argument("--radius-m", type=float, default=3000.0, help="ranking of a thermal among the ground around")
-    sp.add_argument(
-        "--workers",
-        type=int,
-        default=max(1, (os.cpu_count() or 4) // 4),
-        help="parallel processes (default: a quarter of the logical CPUs; the network fields are limited by "
-        "memory bandwidth, more processes do not go faster: 3 and 6 take the same time on a 6-core laptop)",
-    )
+    add_evaluate_args(sp)
     sp.set_defaults(func=cmd_evaluate)
 
     args = parser.parse_args(argv)

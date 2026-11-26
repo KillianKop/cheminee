@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 import os
 
-from cheminee.cli import _add_flight_args, _flight_setup
+from cheminee.cli import _add_flight_args, _flight_setup, add_evaluate_args
 
 from . import fetch, tiles
 from .lift import MODES, Kk7Lift, kk7_factory, layer_keys, load_layers
@@ -211,6 +211,28 @@ def cmd_compare(args) -> None:
     print(f"[kk7] comparison saved to {args.out}")
 
 
+def cmd_evaluate(args) -> None:
+    """`cheminee evaluate` with the kk7 climatology alone and blended into the analytical model as extra
+    models, on the same validation flights."""
+    from cheminee.cli import evaluate_setup
+    from cheminee.lift import HeuristicLift
+    from cheminee.training.evaluate import evaluate, print_scores
+
+    from .lift import Kk7Factory, prefetch
+
+    terrain, paths, models, cfg, validation = evaluate_setup(args)
+    common = dict(blend=args.kk7_blend, mode=args.kk7_mode, zoom=args.kk7_zoom, cache_dir=args.kk7_cache)
+    models["kk7 climatology"] = Kk7Factory(**common)
+    models[f"heuristic + kk7 {args.kk7_mode}"] = Kk7Factory(HeuristicLift, **common)
+
+    def fetch_tiles(windows) -> None:
+        prefetch(windows, args.kk7_zoom, args.kk7_cache, args.kk7_offline, args.kk7_max_tiles)
+
+    result = evaluate(terrain, paths, models, cfg, workers=args.workers, validation=validation, prepare=fetch_tiles)
+    print_scores(result)
+    print(f"[kk7] {KK7_NOTICE}")
+
+
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(prog="cheminee-kk7", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -241,6 +263,16 @@ def main(argv=None) -> None:
     sp.add_argument("--no-forecast", action="store_true", help="disable Open-Meteo forecasts")
     _add_kk7_args(sp)
     sp.set_defaults(func=cmd_serve)
+
+    sp = sub.add_parser(
+        "evaluate", help="`cheminee evaluate` with the kk7 climatology (alone and blended) as extra models"
+    )
+    add_evaluate_args(sp)
+    _add_kk7_args(sp)
+    sp.add_argument(
+        "--kk7-max-tiles", type=int, default=3000, help="stop before downloading more tiles than this (kk7 policy)"
+    )
+    sp.set_defaults(func=cmd_evaluate)
 
     sp = sub.add_parser("fetch", help="download the kk7 layers over a DEM into the cache (all seasons with auto)")
     sp.add_argument("dem")

@@ -82,6 +82,29 @@ def _needed(win: Terrain, x: np.ndarray, y: np.ndarray, thermals: np.ndarray, ra
     return mask
 
 
+def _tile_boxes(terrain: Terrain, fs, cfg: EvalConfig):
+    """(tile x, tile y, indices of the measured samples in it, window box x0, y0, x1, y1 in metres) of a flight."""
+    keep = np.flatnonzero(fs.kind != BACKGROUND)
+    tx, ty = np.floor(fs.x[keep] / cfg.tile_m), np.floor(fs.y[keep] / cfg.tile_m)
+    m, size = cfg.margin_m, cfg.tile_m
+    for a, b in sorted(set(zip(tx.tolist(), ty.tolist()))):
+        idx = np.flatnonzero((tx == a) & (ty == b))
+        yield idx, (a * size - m, b * size - m, (a + 1) * size + m, (b + 1) * size + m)
+
+
+def windows(terrain: Terrain, flights: list, cfg: EvalConfig) -> list[tuple[float, float, float, float, int]]:
+    """(lon_min, lat_min, lon_max, lat_max, day of year) of every DEM window the evaluation will ask the models
+    for: what a model that needs outside data (tiles of a map...) has to fetch beforehand."""
+    out = []
+    for _, _, track, fs in flights:
+        for _, (x0, y0, x1, y1) in _tile_boxes(terrain, fs, cfg):
+            win = crop(terrain, x0, y0, x1, y1)
+            lon0, lat0 = win.xy_to_lonlat(0.0, 0.0)
+            lon1, lat1 = win.xy_to_lonlat(win.width, win.height)
+            out.append((float(lon0), float(lat0), float(lon1), float(lat1), int(track.day_of_year)))
+    return out
+
+
 def _flight_task(terrain: Terrain, track, fs, cfg: EvalConfig) -> dict:
     """What a worker needs to score one flight: small DEM windows around its tiles and its measured samples."""
     keep = np.flatnonzero(fs.kind != BACKGROUND)
@@ -94,12 +117,9 @@ def _flight_task(terrain: Terrain, track, fs, cfg: EvalConfig) -> dict:
     first[is_thermal[np.unique(fs.thermal[is_thermal], return_index=True)[1]]] = True
     first = first[keep]
     lon, lat = terrain.xy_to_lonlat(x, y)
-    tx, ty = np.floor(x / cfg.tile_m), np.floor(y / cfg.tile_m)
     tiles = []
-    for a, b in sorted(set(zip(tx.tolist(), ty.tolist()))):
-        idx = np.flatnonzero((tx == a) & (ty == b))
-        m, size = cfg.margin_m, cfg.tile_m
-        win = crop(terrain, a * size - m, b * size - m, (a + 1) * size + m, (b + 1) * size + m)
+    for idx, box in _tile_boxes(terrain, fs, cfg):
+        win = crop(terrain, *box)
         tiles.append(dict(z=win.z, lon0=win.lon0, lat0=win.lat0, cs=win.cell_deg, idx=idx))
     weathers = [q.weather for q in fs.points] if len(fs.points) > 1 else [fs.weather]
     return dict(
@@ -155,12 +175,14 @@ def evaluate(
     data_cfg: DatasetConfig | None = None,
     workers: int = 1,
     validation: list | None = None,
+    prepare: Callable[[list], None] | None = None,
 ) -> dict:
     """Scores of each model `name -> factory(terrain, params) -> LiftModel` on the validation flights.
 
     With `workers` > 1 the flights are scored in parallel processes; the factories must then be picklable
     (a class such as `HeuristicLift`, or `lift.neural.NeuralFactory`). `validation`: the validation flight
-    indices recorded by `train` (only those flights are read); otherwise the split is rebuilt."""
+    indices recorded by `train` (only those flights are read); otherwise the split is rebuilt. `prepare`: called
+    once with the `windows` of the evaluation before any model is asked for a field (downloads, caches)."""
     from .train import validation_flights
 
     cfg, data_cfg = cfg or EvalConfig(), data_cfg or DatasetConfig()
@@ -178,6 +200,8 @@ def evaluate(
         f"[evaluate] {len(val)} validation flights (from {source}), {len(chosen)} evaluated, {workers} worker(s) "
         f"({time.perf_counter() - t0:.0f} s to read the flights)"
     )
+    if prepare is not None:
+        prepare(windows(terrain, chosen, cfg))
     tasks = (_flight_task(terrain, track, fs, cfg) for _, _, track, fs in chosen)
     pred = {name: [] for name in models}
     ranks = {name: [] for name in models}
